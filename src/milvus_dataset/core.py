@@ -3,10 +3,14 @@ import os
 from pathlib import Path
 import pandas as pd
 from enum import Enum
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, create_model, ValidationError
 from typing import Union, Dict, List, Any, Optional
 import pyarrow.parquet as pq
 from threading import Lock
+from filelock import FileLock
+import threading
+import time
+from .logging import logger
 from .storage import StorageBackend, LocalStorage, S3Storage
 from .models.schema import DatasetSchema
 from .writer import DatasetWriter
@@ -99,15 +103,39 @@ def _create_storage(storage_config: StorageConfig):
 
 
 class Dataset:
-    def __init__(self, name: str, schema: Dict = None, metadata=None):
+    def __init__(self, name: str, schema: Dict = None, split="train", metadata=None):
         self.name = name
-        config = get_config()
-        self.storage = _create_storage(config.storage)
-        self.root_path = config.storage.root_path
-        self.schema = DatasetSchema(schema) if schema else {}
+        self.config = get_config()
+        self.storage = _create_storage(self.config.storage)
+        self.root_path = self.config.storage.root_path
+        self._schema = None
         self.metadata = self._load_metadata()
+        self.split = split
+        logger.info(f"Initializing dataset '{name}' with split '{split}'")
+        if self.split == "train":
+            self._set_or_load_schema(schema)
+        self._ensure_split_exists()
         self.writer = DatasetWriter(self)
         self.reader = DatasetReader(self)
+
+    def _set_or_load_schema(self, schema: Optional[Dict[str, Any]]):
+        schema_path = os.path.join(self.config.storage.root_path, self.name, "schema.json")
+        if schema:
+            with open(schema_path, 'w') as f:
+                json.dump(schema, f, indent=2)
+            self._schema = create_model('DataSchema', **schema)
+        elif os.path.exists(schema_path):
+            with open(schema_path, 'r') as f:
+                schema_dict = json.load(f)
+            self._schema = create_model('DataSchema', **schema_dict)
+        else:
+            self._schema = None
+
+    def _ensure_split_exists(self):
+        dataset_dir = os.path.join(self.root_path, self.name)
+        split_dir = os.path.join(dataset_dir, self.split)
+        if not os.path.exists(split_dir):
+            os.makedirs(split_dir, exist_ok=True)
 
     def _load_metadata(self):
         metadata_path = self.storage.join(self.root_path, f"{self.name}/metadata.json")
@@ -121,8 +149,9 @@ class Dataset:
 
     def write(self, data: Union[pd.DataFrame, Dict, List[Dict]], mode: str = 'append', verify_schema: bool = False):
         # validate data
+        logger.info(f"Writing data to dataset '{self.name}'")
         if verify_schema:
-            self.schema.validate(data)
+            self._schema.validate(data)
         return self.writer.write(data, mode)
 
     def read(self, mode: str = 'stream', batch_size: int = 1000):
@@ -201,6 +230,26 @@ class Dataset:
             "num_files": num_files
         }
 
+class DatasetDict(dict):
+    def __init__(self, datasets: Dict[str, Dataset]):
+        super().__init__(datasets)
+
+class FileLock:
+    def __init__(self, lock_file):
+        self.lock_file = lock_file
+        self.lock = threading.Lock()
+
+    def __enter__(self):
+        self.lock.acquire()
+        while os.path.exists(self.lock_file):
+            time.sleep(0.1)
+        open(self.lock_file, 'w').close()
+
+    def __exit__(self, type, value, traceback):
+        os.remove(self.lock_file)
+        self.lock.release()
+
+
 def list_datasets() -> List[
     Dict[str, Union[str, Dict]]]:
     config = get_config()
@@ -249,7 +298,10 @@ def list_datasets() -> List[
     return datasets
 
 
-def load_dataset(name: str, mode='batch', batch_size=10000):
+
+
+
+def load_dataset(name: str, split: Optional[Union[str, List[str]]] = None, mode='batch', batch_size=10000):
     """
     Load a dataset from the given root path.
 
@@ -261,21 +313,18 @@ def load_dataset(name: str, mode='batch', batch_size=10000):
     Returns:
         Dataset: The loaded dataset.
     """
-    return Dataset(name).read(mode=mode, batch_size=batch_size)
+    available_splits = ['train', 'test', 'neighbors']
 
+    if split is None:
+        return DatasetDict({
+            s: Dataset(name, split=s) for s in available_splits
+        })
+    elif isinstance(split, str):
+        return Dataset(name, split=split)
+    elif isinstance(split, list):
+        return DatasetDict({
+            s: Dataset(name, split=s) for s in split
+        })
+    else:
+        raise ValueError("Split must be None, a string, or a list of strings")
 
-def create_dataset(name: str, schema: Dict = None, metadata=None) -> Dataset:
-    """
-    Create a new dataset at the given root path.
-
-    Args:
-        root_path (str): The root path where the dataset will be stored.
-        name (str): The name of the dataset to create.
-        storage_options (Dict, optional): Options for the storage backend.
-        fields_schema (Dict, optional): The schema of the dataset fields.
-
-    Returns:
-        Dataset: The newly created dataset.
-    """
-    dataset = Dataset(name, schema=schema, metadata=metadata)
-    return dataset

@@ -2,8 +2,11 @@ import os
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pandas as pd
-from typing import Optional, Iterator, Dict, Any, Union
+from typing import Optional, Iterator, Dict, Any, Union, Generator
 from pathlib import Path
+
+from pandas import DataFrame
+
 
 class ArrowBasedDataset:
     def __init__(self, data_source, mode: str = 'full', batch_size: Optional[int] = None):
@@ -89,8 +92,9 @@ class DatasetReader:
     def __init__(self, dataset):
         self.dataset = dataset
 
-    def read(self, mode: str = 'stream', batch_size: Optional[int] = None) -> Union[pd.DataFrame, ArrowBasedDataset]:
-        path = Path(self.dataset.root_path) / self.dataset.name
+    def read(self, mode: str = 'stream', batch_size: Optional[int] = None) -> DataFrame | Generator[
+        Any, Any, None] | Any:
+        path = Path(self.dataset.root_path) / self.dataset.name / self.dataset.split
         if not path.exists():
             raise FileNotFoundError(f"Dataset not found: {path}")
 
