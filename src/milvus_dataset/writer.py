@@ -1,12 +1,11 @@
-import math
+import os
+
 import pandas as pd
 import pyarrow as pa
-from pathlib import Path
+import pyarrow.parquet as pq
 from typing import Union, Dict, List
 import tempfile
-import glob
 from .logging import logger
-
 
 class DatasetWriter:
     def __init__(self, dataset, target_file_size_mb=5):
@@ -40,17 +39,22 @@ class DatasetWriter:
         sample_size = min(10000, len(df))
         sample_df = df.sample(n=sample_size) if len(df) > sample_size else df
 
-        with tempfile.NamedTemporaryFile(suffix='.parquet') as tmp:
+        with tempfile.NamedTemporaryFile(suffix='.parquet', delete=False) as tmp:
             sample_df.to_parquet(tmp.name, engine='pyarrow', compression='snappy')
-            file_size = Path(tmp.name).stat().st_size
+
+            # 使用 os.path.getsize 获取本地文件大小
+            file_size = os.path.getsize(tmp.name)
+
+        # 删除临时文件
+        os.unlink(tmp.name)
 
         estimated_row_size = file_size / len(sample_df)
         estimated_rows_per_file = int(self.target_file_size_bytes / estimated_row_size)
 
-        # Round to nearest 10000
+        # 四舍五入到最接近的 10000
         rounded_rows_per_file = round(estimated_rows_per_file / 10000) * 10000
 
-        # Ensure we always have at least 10000 rows per file
+        # 确保每个文件至少有 10000 行
         final_rows_per_file = max(10000, rounded_rows_per_file)
 
         logger.info(f"Estimated rows per file: {estimated_rows_per_file}")
@@ -58,8 +62,8 @@ class DatasetWriter:
         return final_rows_per_file
 
     def _write_table(self, table: pa.Table, mode: str):
-        base_path = Path(f"{self.dataset.root_path}/{self.dataset.name}/{self.dataset.split}")
-        base_path.mkdir(parents=True, exist_ok=True)
+        base_path = f"{self.dataset.root_path}/{self.dataset.name}/{self.dataset.split}"
+        self.dataset.fs.makedirs(base_path, exist_ok=True)
 
         df = table.to_pandas()
 
@@ -68,14 +72,13 @@ class DatasetWriter:
 
         start_number = 0
         if mode == 'append':
-            existing_files = sorted(glob.glob(str(base_path / "part-*.parquet")))
+            existing_files = sorted(self.dataset.fs.glob(f"{base_path}/part-*.parquet"))
             if existing_files:
                 last_file = existing_files[-1]
                 start_number = int(last_file.split('-')[-1].split('.')[0]) + 1
-                # Read the last file to check if it's full
-                last_df = pd.read_parquet(last_file)
+                with self.dataset.fs.open(last_file, 'rb') as f:
+                    last_df = pd.read_parquet(f)
                 if len(last_df) < self.rows_per_file:
-                    # If the last file is not full, we'll append to it
                     start_number -= 1
                     df = pd.concat([last_df, df])
 
@@ -86,27 +89,20 @@ class DatasetWriter:
             partition_df = df.iloc[start_idx:end_idx]
 
             filename = f"part-{start_number + i:05d}.parquet"
-            file_path = base_path / filename
-            partition_df.to_parquet(file_path, engine='pyarrow', compression='snappy')
+            file_path = f"{base_path}/{filename}"
+            with self.dataset.fs.open(file_path, 'wb') as f:
+                partition_df.to_parquet(f, engine='pyarrow', compression='snappy')
             logger.info(f"Wrote file: {filename} with {len(partition_df)} rows")
 
-        # Handle the last, potentially partial file
         if len(df) % self.rows_per_file > 0:
             start_idx = num_full_files * self.rows_per_file
             partition_df = df.iloc[start_idx:]
             filename = f"part-{start_number + num_full_files:05d}.parquet"
-            file_path = base_path / filename
-            partition_df.to_parquet(file_path, engine='pyarrow', compression='snappy')
+            file_path = f"{base_path}/{filename}"
+            with self.dataset.fs.open(file_path, 'wb') as f:
+                partition_df.to_parquet(f, engine='pyarrow', compression='snappy')
             logger.info(f"Wrote last file: {filename} with {len(partition_df)} rows")
 
-        # Log detailed information about all files
-        logger.info("Summary of all written files:")
-        for file_path in sorted(base_path.glob("part-*.parquet")):
-            file_size = file_path.stat().st_size
-            df = pd.read_parquet(file_path)
-            logger.info(f"File: {file_path.name}, Size: {file_size / 1024:.2f} KB, Rows: {len(df)}")
-
-        # 更新元数据
         self.dataset.metadata['last_file_number'] = start_number + num_full_files + (
             1 if len(df) % self.rows_per_file > 0 else 0) - 1
         self.dataset._save_metadata()
