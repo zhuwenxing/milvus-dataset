@@ -6,7 +6,7 @@ from typing import Optional, Iterator, Dict, Any, Union, Generator
 from pathlib import Path
 
 from pandas import DataFrame
-
+from .logging import logger
 
 class ArrowBasedDataset:
     def __init__(self, data_source, mode: str = 'full', batch_size: Optional[int] = None):
@@ -102,7 +102,14 @@ class DatasetReader:
             if path.is_file():
                 return pq.read_table(str(path)).to_pandas()
             else:
-                return pd.concat([pq.read_table(str(f)).to_pandas() for f in path.glob('*.parquet')], ignore_index=True)
+                logger.info(f"Reading full dataset from: {path}, this may take a while...")
+                file_list = list(path.glob('*.parquet'))
+                if not file_list:
+                    logger.info("No parquet files found.")
+                    return pd.DataFrame()
+                else:
+                    logger.info(f"Found {len(file_list)} parquet files.")
+                    return pd.concat([pq.read_table(str(f)).to_pandas() for f in path.glob('*.parquet')], ignore_index=True)
         elif mode in ['stream', 'batch']:
             def data_generator():
                 for file in path.glob('*.parquet'):
