@@ -57,9 +57,35 @@ class DatasetReader:
 
     def _read_stream(self, path, batch_size):
         def data_generator():
+            current_batch = []
+            current_size = 0
+
             for file in self.dataset.fs.glob(f"{path}/*.parquet"):
                 with self.dataset.fs.open(file, 'rb') as f:
                     pf = pq.ParquetFile(f)
-                    for batch in pf.iter_batches(batch_size=batch_size):
-                        yield batch.to_pandas()
+                    for batch in pf.iter_batches():
+                        df = batch.to_pandas()
+                        current_batch.append(df)
+                        current_size += len(df)
+
+                        while current_size >= batch_size:
+                            # Combine and yield a full batch
+                            combined_df = pd.concat(current_batch, ignore_index=True)
+
+                            batch_df = combined_df.iloc[:batch_size]
+                            logger.info(f"Yielding batch of size {len(batch_df)}")
+                            yield batch_df
+
+                            # Keep the remainder for the next batch
+                            if len(combined_df) > batch_size:
+                                current_batch = [combined_df.iloc[batch_size:]]
+                                current_size = len(current_batch[0])
+                            else:
+                                current_batch = []
+                                current_size = 0
+
+            # Yield any remaining data
+            if current_batch:
+                yield pd.concat(current_batch, ignore_index=True)
+
         return data_generator()

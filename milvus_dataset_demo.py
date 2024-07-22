@@ -16,8 +16,6 @@ ConfigManager().init_storage(
     use_ssl=False
 )
 
-
-
 print(config_manager)
 d_list = list_datasets()
 print(d_list)
@@ -29,10 +27,10 @@ train_data = dataset['train']
 dataset_size = 40100
 t0 = time.time()
 data = {
-        "id": range(dataset_size),
-        "text": [f"text_{i}" for i in range(dataset_size)],
-        "value": [[random.random() for _ in range(128)] for i in range(dataset_size)],
-    }
+    "id": range(dataset_size),
+    "text": [f"text_{i}" for i in range(dataset_size)],
+    "value": [[random.random() for _ in range(128)] for i in range(dataset_size)],
+}
 
 tt = time.time() - t0
 print(f"Data generation time: {tt:.2f} s")
@@ -43,7 +41,7 @@ train_data.write(
 
 demo = load_dataset("test_dataset")
 print(demo)
-for name,split in demo.items():
+for name, split in demo.items():
     print(name)
     print(split.read())
     data = split.read(mode="full")
@@ -52,7 +50,7 @@ for name,split in demo.items():
         print(d)
         break
 
-for name,split in demo.items():
+for name, split in demo.items():
     print(name)
     print(split.read())
     data = split.read(mode="stream")
@@ -60,7 +58,7 @@ for name,split in demo.items():
     for d in data:
         print(d)
         break
-for name,split in demo.items():
+for name, split in demo.items():
     print(name)
     print(split.read())
     data = split.read(mode="batch", batch_size=10000)

@@ -15,7 +15,7 @@ from threading import Lock
 from .logging import logger
 from .writer import DatasetWriter
 from .reader import DatasetReader
-
+from .neighbors import NeighborsComputation
 
 class StorageType(Enum):
     LOCAL = "local"
@@ -181,6 +181,10 @@ class Dataset:
     def read(self, mode: str = 'stream', batch_size: int = 1000):
         return self.reader.read(mode, batch_size)
 
+    def get_total_rows(self, split: str) -> int:
+        # 实现此方法以返回指定 split 的总行数
+        pass
+
     def summary(self) -> Dict[str, Union[str, int, Dict]]:
         path = f"{self.root_path}/{self.name}"
         if not self.fs.exists(path):
@@ -223,6 +227,13 @@ class Dataset:
 class DatasetDict(dict):
     def __init__(self, datasets: Dict[str, Dataset]):
         super().__init__(datasets)
+
+    def __getitem__(self, key: str) -> Dataset:
+        return super().__getitem__(key)
+
+    def compute_neighbors(self, vector_field_name, query_expr=None, top_k=1000, **kwargs):
+        neighbors_computation = NeighborsComputation(self, vector_field_name, query_expr=query_expr, top_k=top_k, **kwargs)
+        neighbors_computation.compute_ground_truth()
 
 
 def list_datasets() -> List[Dict[str, Union[str, Dict]]]:
