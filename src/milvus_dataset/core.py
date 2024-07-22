@@ -1,7 +1,7 @@
 import json
 import threading
 from pathlib import Path
-
+import numpy as np
 import fsspec
 from fsspec.spec import AbstractFileSystem
 from enum import Enum
@@ -11,7 +11,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from threading import Lock
-
+from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType, utility
 from .logging import logger
 from .writer import DatasetWriter
 from .reader import DatasetReader
@@ -227,6 +227,10 @@ class Dataset:
 class DatasetDict(dict):
     def __init__(self, datasets: Dict[str, Dataset]):
         super().__init__(datasets)
+        self.name = datasets['train'].name
+        self.train = datasets['train']
+        # self.test = datasets['test']
+        # self.neighbors = datasets['neighbors']
 
     def __getitem__(self, key: str) -> Dataset:
         return super().__getitem__(key)
@@ -235,6 +239,102 @@ class DatasetDict(dict):
         neighbors_computation = NeighborsComputation(self, vector_field_name, query_expr=query_expr, top_k=top_k, **kwargs)
         neighbors_computation.compute_ground_truth()
 
+    def get_neighbors(self, query_expr=None):
+        neighbors = self['neighbors']
+        file_name = f"{neighbors.root_path}/{neighbors.name}/{neighbors.split}/neighbors-{query_expr}.parquet"
+        if neighbors.fs.exists(file_name):
+            with neighbors.fs.open(file_name, 'rb') as f:
+                return pq.read_table(f).to_pandas()
+        else:
+            logger.warning(f"Neighbors file not found: {file_name}")
+            return pd.DataFrame()
+
+    def to_milvus(self, host: str = "localhost", port: str = "19530", collection_name: str = None,
+                  id_field: str = None, vector_field: str = None, index=None):
+        """
+        Transfer the dataset to a Milvus collection, automatically generating the schema from the DataFrame.
+
+        Args:
+            collection_name (str): Name of the Milvus collection to create or use
+            host (str): Milvus server host
+            port (str): Milvus server port
+            id_field (str): Name of the field to use as the primary key (optional)
+            vector_field (str): Name of the field containing the vector data (optional)
+
+        Returns:
+            None
+        """
+        if collection_name is None:
+            collection_name = self.name
+        logger.info(f"Transferring dataset '{self.name}' to Milvus collection '{collection_name}'")
+
+        # Connect to Milvus
+        connections.connect(host=host, port=port)
+
+        # Read the first batch of data to infer the schema
+        first_batch = next(self.train.read(mode='stream'))
+
+        # Generate Milvus schema from DataFrame
+        fields = self._generate_milvus_schema(first_batch, id_field, vector_field)
+
+        # Check if collection exists, if not, create it
+        if not utility.has_collection(collection_name):
+            schema = CollectionSchema(fields, description=f"Collection for dataset {self.name}")
+            collection = Collection(name=collection_name, schema=schema)
+            logger.info(f"Created new Milvus collection: {collection_name}")
+        else:
+            collection = Collection(name=collection_name)
+            logger.info(f"Using existing Milvus collection: {collection_name}")
+
+        # Insert data
+        for batch in self.train.read(mode='stream'):
+            self._insert_data(collection, batch, fields)
+
+        # Flush the collection to ensure all data is written
+        collection.flush()
+        if index is None:
+            index = {
+                "index_type": "FLAT",
+                "metric_type": "L2",
+                "params": {},
+            }
+        collection.create_index(vector_field, index)
+
+        # Load the collection for search
+        collection.load()
+
+        logger.info(f"Successfully transferred dataset '{self.name}' to Milvus collection '{collection_name}'")
+
+    def _generate_milvus_schema(self, df: pd.DataFrame, id_field: Optional[str] = None, vector_field: Optional[str] = None) -> List[FieldSchema]:
+        fields = []
+        for column, dtype in df.dtypes.items():
+            column_name = str(column)  # Convert column name to string
+            if column_name == id_field or (id_field is None and column_name == str(df.index.name)):
+                fields.append(FieldSchema(name=column_name, dtype=DataType.INT64, is_primary=True, auto_id=False))
+            elif column_name == vector_field or (vector_field is None and dtype == 'object' and isinstance(df[column].iloc[0], (list, np.ndarray))):
+                dim = len(df[column].iloc[0])
+                fields.append(FieldSchema(name=column_name, dtype=DataType.FLOAT_VECTOR, dim=dim))
+            elif np.issubdtype(dtype, np.integer):
+                fields.append(FieldSchema(name=column_name, dtype=DataType.INT64))
+            elif np.issubdtype(dtype, np.floating):
+                fields.append(FieldSchema(name=column_name, dtype=DataType.FLOAT))
+            elif dtype == 'bool':
+                fields.append(FieldSchema(name=column_name, dtype=DataType.BOOL))
+            else:
+                fields.append(FieldSchema(name=column_name, dtype=DataType.VARCHAR, max_length=65535))
+        return fields
+
+    def _insert_data(self, collection: Collection, df: pd.DataFrame, fields: List[FieldSchema]):
+        entities = []
+        for _, row in df.iterrows():
+            entity = {}
+            for field in fields:
+                if field.dtype == DataType.FLOAT_VECTOR:
+                    entity[field.name] = row[field.name].tolist()
+                else:
+                    entity[field.name] = row[field.name]
+            entities.append(entity)
+        collection.insert(entities)
 
 def list_datasets() -> List[Dict[str, Union[str, Dict]]]:
     config = get_config()
