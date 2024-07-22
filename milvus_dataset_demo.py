@@ -12,7 +12,7 @@ ConfigManager().init_storage(
     storage_type=StorageType.S3,
     aws_access_key_id="minioadmin",
     aws_secret_access_key="minioadmin",
-    endpoint_url="http://10.100.36.175:9000",
+    endpoint_url="http://127.0.0.1:9000",
     use_ssl=False
 )
 
