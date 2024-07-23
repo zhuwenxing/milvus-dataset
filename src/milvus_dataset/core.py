@@ -20,6 +20,7 @@ from .writer import DatasetWriter
 from .reader import DatasetReader
 from .neighbors import NeighborsComputation
 
+
 class StorageType(Enum):
     LOCAL = "local"
     S3 = "s3"
@@ -97,21 +98,10 @@ class ConfigManager:
                 except Exception as create_error:
                     logger.error(f"Failed to create bucket {bucket}: {str(create_error)}")
                     raise
-                else:
-                    raise
 
         except Exception as e:
             logger.error(f"Failed to connect to S3/MinIO: {str(e)}")
             raise
-
-    def set_default_schema(self, schema: Dict[str, Any]):
-        if self.config is None:
-            raise ValueError("Storage configuration must be initialized before setting schema")
-        new_config = DatasetConfig(
-            storage=self.config.storage,
-            default_schema=schema
-        )
-        self._initialize(new_config)
 
     def _initialize(self, config: DatasetConfig):
         with self._lock:
@@ -176,7 +166,6 @@ class Dataset:
             f"num_files={summary['num_files']})"
         )
 
-
     def set_schema(self, schema: CollectionSchema):
         """设置数据集的schema。"""
         self._schema = schema
@@ -213,6 +202,7 @@ class Dataset:
         metadata_path = f"{self.root_path}/{self.name}/metadata.json"
         with self.fs.open(metadata_path, 'w') as f:
             json.dump(self.metadata, f)
+
     def get_schema(self) -> Optional[CollectionSchema]:
         """获取数据集当前的schema。"""
         if self._schema is None:
@@ -220,8 +210,13 @@ class Dataset:
         return self._schema
 
     def _verify_schema(self, data: Union[pd.DataFrame, Dict, List[Dict]]):
+        # if column is auto id, remove it from schema
+        # column 不能多，也不能少
+
         if isinstance(data, pd.DataFrame):
             for field in self._schema.fields:
+                if field.auto_id:
+                    continue
                 if field.name not in data.columns:
                     raise ValueError(f"数据中缺少字段 '{field.name}'。")
         elif isinstance(data, dict) or (isinstance(data, list) and isinstance(data[0], dict)):
@@ -229,7 +224,6 @@ class Dataset:
             for field in self._schema.fields:
                 if field.name not in sample:
                     raise ValueError(f"数据中缺少字段 '{field.name}'。")
-
 
     def _get_summary(self) -> Dict[str, Union[str, int, Dict]]:
         if self._summary is None:
@@ -375,7 +369,7 @@ class Dataset:
 
         return {
             "name": self.name,
-            "size": f"{total_size/1024/1024:.3f} MB",
+            "size": f"{total_size / 1024 / 1024:.3f} MB",
             "num_rows": total_rows,
             "num_columns": len(schema_dict),
             "schema": schema_dict,
@@ -383,13 +377,13 @@ class Dataset:
             "num_files": num_files
         }
 
+
 class DatasetDict(dict):
     def __init__(self, datasets: Dict[str, Dataset]):
         super().__init__(datasets)
         self.datasets = datasets
         self.name = datasets['train'].name
         self.train = datasets['train']
-
 
     def __getitem__(self, key: str) -> Dataset:
         return super().__getitem__(key)
@@ -457,7 +451,8 @@ class DatasetDict(dict):
         return self.summary()
 
     def compute_neighbors(self, vector_field_name, query_expr=None, top_k=1000, **kwargs):
-        neighbors_computation = NeighborsComputation(self, vector_field_name, query_expr=query_expr, top_k=top_k, **kwargs)
+        neighbors_computation = NeighborsComputation(self, vector_field_name, query_expr=query_expr, top_k=top_k,
+                                                     **kwargs)
         neighbors_computation.compute_ground_truth()
 
     def get_neighbors(self, query_expr=None):
@@ -524,7 +519,7 @@ class DatasetDict(dict):
                 "index_type": "FLAT",
                 "metric_type": "L2",
                 "params": {},
-        }
+            }
         collection.create_index(vector_field, index)
 
         # Load the collection for search
@@ -532,13 +527,15 @@ class DatasetDict(dict):
 
         logger.info(f"Successfully transferred dataset '{self.name}' to Milvus collection '{collection_name}'")
 
-    def _generate_milvus_schema(self, df: pd.DataFrame, id_field: Optional[str] = None, vector_field: Optional[str] = None) -> List[FieldSchema]:
+    def _generate_milvus_schema(self, df: pd.DataFrame, id_field: Optional[str] = None,
+                                vector_field: Optional[str] = None) -> List[FieldSchema]:
         fields = []
         for column, dtype in df.dtypes.items():
             column_name = str(column)  # Convert column name to string
             if column_name == id_field or (id_field is None and column_name == str(df.index.name)):
                 fields.append(FieldSchema(name=column_name, dtype=DataType.INT64, is_primary=True, auto_id=False))
-            elif column_name == vector_field or (vector_field is None and dtype == 'object' and isinstance(df[column].iloc[0], (list, np.ndarray))):
+            elif column_name == vector_field or (
+                    vector_field is None and dtype == 'object' and isinstance(df[column].iloc[0], (list, np.ndarray))):
                 dim = len(df[column].iloc[0])
                 fields.append(FieldSchema(name=column_name, dtype=DataType.FLOAT_VECTOR, dim=dim))
             elif np.issubdtype(dtype, np.integer):
@@ -563,6 +560,7 @@ class DatasetDict(dict):
             entities.append(entity)
         collection.insert(entities)
 
+
 def list_datasets() -> List[Dict[str, Union[str, Dict]]]:
     config = get_config()
     root_path = config.storage.root_path
@@ -585,10 +583,11 @@ def list_datasets() -> List[Dict[str, Union[str, Dict]]]:
     return datasets
 
 
-def load_dataset(name: str, split: Optional[Union[str, List[str]]] = None, schema: Optional[CollectionSchema] = None) -> Union[Dataset, DatasetDict]:
+def load_dataset(name: str, split: Optional[Union[str, List[str]]] = None, schema: Optional[CollectionSchema] = None) -> \
+Union[Dataset, DatasetDict]:
     if split is None:
         splits = ['train', 'test', 'neighbors']
-        datasets = {s: Dataset(name, split=s,) for s in splits}
+        datasets = {s: Dataset(name, split=s, ) for s in splits}
         dataset_dict = DatasetDict(datasets)
         if schema:
             dataset_dict.train.set_schema(schema)
