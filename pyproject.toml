@@ -6,10 +6,10 @@ authors = [
     {name = "Your Name", email = "your.email@example.com"},
 ]
 dependencies = [
-    "pandas>=1.0.0",
+    "pandas>=2.2.2",
     "numpy>=1.18.0",
     "scipy>=1.4.0",
-    "scikit-learn>=0.22.0",
+    "scikit-learn>=1.5.1",
     "pymilvus>=2.0.0",
     "pydantic>=1.8.0",
     "boto3>=1.17.0",
@@ -17,6 +17,7 @@ dependencies = [
     "fastembed>=0.3.4",
     "filelock>=3.15.4",
     "dask[complete]>=2024.7.0",
+    "grpcio>=1.63.0",
 ]
 requires-python = "<=3.12,>=3.10"
 readme = "README.md"

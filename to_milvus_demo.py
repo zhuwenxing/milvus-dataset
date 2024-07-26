@@ -1,8 +1,9 @@
 import random
+from pymilvus import FieldSchema, CollectionSchema, DataType
 import time
-
-from milvus_dataset import list_datasets, load_dataset, ConfigManager, StorageType
-
+from pymilvus import MilvusClient
+from milvus_dataset import list_datasets, load_dataset, ConfigManager, StorageType, StorageConfig
+from loguru import logger
 config_manager = ConfigManager()
 # config_manager.init_storage("/tmp/milvus_dataset")
 
@@ -12,10 +13,17 @@ ConfigManager().init_storage(
     storage_type=StorageType.LOCAL,
 )
 
-dataset = load_dataset("openai_large_v12")
+# 创建schema
+id_field = FieldSchema("id", DataType.INT64, is_primary=True)
+vector_field = FieldSchema("emb", DataType.FLOAT_VECTOR, dim=128)
+text_field = FieldSchema("text", DataType.VARCHAR, max_length=200)
+schema = CollectionSchema(fields=[id_field, vector_field, text_field], description="我的数据集schema")
+
+
+dataset = load_dataset("openai_large_demo_1", schema=schema)
 print(dataset)
 train_data = dataset['train']
-dataset_size = 50000
+dataset_size = 5000
 data = {
         "id": range(dataset_size),
         "text": [f"text_{i}" for i in range(dataset_size)],
@@ -36,14 +44,27 @@ test_data.write(
     mode="append",
 )
 dataset.compute_neighbors(vector_field_name="emb", top_k=100, max_rows_per_epoch=10000, metric_type="cosine")
-dataset.to_milvus(
-    host="10.104.17.73",
-    port="19530",
-    id_field="id",
-    vector_field="emb",
-    collection_name="openai_large_v12",
-    index={"index_type": "FLAT", "metric_type": "COSINE"},
+
+print(dataset)
+
+milvus_client = MilvusClient(
+    uri='http://10.104.33.77:19530',
+    token='root:Milvus',
+    db_name='default'
 )
+
+milvus_storage = StorageConfig(
+    root_path="s3://milvus-bucket/milvus-dataset",
+    type=StorageType.S3,
+    options={
+        "key": "minioadmin",
+        "secret": "minioadmin",
+        "endpoint_url": "http://10.104.33.79:9000",
+        "use_ssl": False,
+    }
+)
+logger.info("Start to save dataset to milvus")
+dataset.to_milvus(milvus_client, "import", milvus_storage=milvus_storage)
 
 
 

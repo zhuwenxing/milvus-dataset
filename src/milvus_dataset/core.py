@@ -10,27 +10,20 @@ from pymilvus import FieldSchema, CollectionSchema, DataType
 from pydantic import BaseModel, create_model
 from typing import Dict, Any, Optional, Union, List
 import pandas as pd
+from pymilvus import MilvusClient
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pyarrow import Schema
 from threading import Lock
 from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType, utility
+from .storage import StorageType, StorageConfig, _create_filesystem
 from .logging import logger
 from .writer import DatasetWriter
 from .reader import DatasetReader
 from .neighbors import NeighborsComputation
 
 
-class StorageType(Enum):
-    LOCAL = "local"
-    S3 = "s3"
-    GCS = "gs"
 
-
-class StorageConfig(BaseModel):
-    type: StorageType
-    root_path: str
-    options: Dict[str, Any] = {}
 
 
 class DatasetConfig(BaseModel):
@@ -112,33 +105,6 @@ def get_config() -> DatasetConfig:
     return ConfigManager().get_config()
 
 
-def _create_filesystem(storage_config: StorageConfig) -> AbstractFileSystem:
-    logger.info(f"Creating filesystem with config: {storage_config.dict()}")
-    if storage_config.type == StorageType.LOCAL:
-        return fsspec.filesystem("file")
-    elif storage_config.type == StorageType.S3:
-        try:
-            fs = fsspec.filesystem("s3", **storage_config.options)
-            # 测试连接
-            bucket = storage_config.root_path.split("://")[1].split("/")[0]
-            try:
-                fs.ls(bucket)
-                logger.info(f"Successfully connected to existing bucket: {bucket}")
-            except Exception as e:
-                try:
-                    fs.mkdir(bucket)
-                    logger.info(f"Successfully created and connected to new bucket: {bucket}")
-                except Exception as create_error:
-                    logger.error(f"Failed to create bucket {bucket}: {str(create_error)}")
-                    raise
-            return fs
-        except Exception as e:
-            logger.error(f"Failed to create S3 filesystem: {str(e)}")
-            raise
-    elif storage_config.type == StorageType.GCS:
-        return fsspec.filesystem("gcs", **storage_config.options)
-    else:
-        raise ValueError(f"Unsupported storage type: {storage_config.type}")
 
 
 class Dataset:
@@ -406,6 +372,7 @@ class DatasetDict(dict):
 
             # Copy all files from source to destination
             for file in dataset.fs.glob(f"{source_path}/*.parquet"):
+                logger.info(f"Copying file: {file}")
                 file_name = Path(file).name
                 with dataset.fs.open(file, 'rb') as source_file:
                     with dest_fs.open(f"{dest_path}/{file_name}", 'wb') as dest_file:
@@ -471,94 +438,41 @@ class DatasetDict(dict):
             dataset.set_schema(schema)
         logger.info(f"已为数据集 '{self.name}' 的所有分割设置schema")
 
-    def to_milvus(self, host: str = "localhost", port: str = "19530", collection_name: str = None,
-                  id_field: str = None, vector_field: str = None, index=None):
+    def to_milvus(self, milvus_client: MilvusClient, mode='insert', milvus_storage=None):
         """
-        Transfer the dataset to a Milvus collection, automatically generating the schema from the DataFrame.
+        将数据集写入 Milvus。可以是insert， bulk import
+        需要传入什么信息呢？主要就是milvus的连接信息，传入一个milvus client就行？
+        如何做bulk import呢？需要传入一个milvus storage，这里主要就是milvus使用的minio或者s3的连接信息
 
-        Args:
-            collection_name (str): Name of the Milvus collection to create or use
-            host (str): Milvus server host
-            port (str): Milvus server port
-            id_field (str): Name of the field to use as the primary key (optional)
-            vector_field (str): Name of the field containing the vector data (optional)
-
-        Returns:
-            None
+        :return:
         """
-        if collection_name is None:
-            collection_name = self.name
-        logger.info(f"Transferring dataset '{self.name}' to Milvus collection '{collection_name}'")
-
-        # Connect to Milvus
-        connections.connect(host=host, port=port)
-
-        # Read the first batch of data to infer the schema
-        first_batch = next(self.train.read(mode='stream'))
-
-        # Generate Milvus schema from DataFrame
-        fields = self._generate_milvus_schema(first_batch, id_field, vector_field)
-
-        # Check if collection exists, if not, create it
-        if not utility.has_collection(collection_name):
-            schema = CollectionSchema(fields, description=f"Collection for dataset {self.name}")
-            collection = Collection(name=collection_name, schema=schema)
-            logger.info(f"Created new Milvus collection: {collection_name}")
+        # create collection
+        milvus_client.create_collection(
+            collection_name=self.name,
+            schema=self['train'].get_schema(),
+        )
+        if mode == 'insert':
+            for data in self['train'].read():
+                milvus_client.insert(collection_name=self.name, data=data)
+        elif mode == 'import':
+            # 使用save to的方式，将数据集保存到milvus storage
+            # sync data to milvus storage
+            self.save(milvus_storage)
+            # list all files in train split
+            # create fs by milvus storage
+            milvus_fs = _create_filesystem(milvus_storage)
+            train_files = milvus_fs.glob(f"{milvus_storage.root_path}/{self.name}/train/*.parquet")
+            # restful api to import data
+            for file in train_files:
+                logger.info(f"Importing file {file} to Milvus")
+                utility.do_bulk_insert(
+                    collection_name=self.name,
+                    file_path=[file],
+                )
+                logger.info(f"File {file} has been imported to Milvus")
         else:
-            collection = Collection(name=collection_name)
-            logger.info(f"Using existing Milvus collection: {collection_name}")
-
-        # Insert data
-        for batch in self.train.read(mode='stream'):
-            self._insert_data(collection, batch, fields)
-
-        # Flush the collection to ensure all data is written
-        collection.flush()
-        if index is None:
-            index = {
-                "index_type": "FLAT",
-                "metric_type": "L2",
-                "params": {},
-            }
-        collection.create_index(vector_field, index)
-
-        # Load the collection for search
-        collection.load()
-
-        logger.info(f"Successfully transferred dataset '{self.name}' to Milvus collection '{collection_name}'")
-
-    def _generate_milvus_schema(self, df: pd.DataFrame, id_field: Optional[str] = None,
-                                vector_field: Optional[str] = None) -> List[FieldSchema]:
-        fields = []
-        for column, dtype in df.dtypes.items():
-            column_name = str(column)  # Convert column name to string
-            if column_name == id_field or (id_field is None and column_name == str(df.index.name)):
-                fields.append(FieldSchema(name=column_name, dtype=DataType.INT64, is_primary=True, auto_id=False))
-            elif column_name == vector_field or (
-                    vector_field is None and dtype == 'object' and isinstance(df[column].iloc[0], (list, np.ndarray))):
-                dim = len(df[column].iloc[0])
-                fields.append(FieldSchema(name=column_name, dtype=DataType.FLOAT_VECTOR, dim=dim))
-            elif np.issubdtype(dtype, np.integer):
-                fields.append(FieldSchema(name=column_name, dtype=DataType.INT64))
-            elif np.issubdtype(dtype, np.floating):
-                fields.append(FieldSchema(name=column_name, dtype=DataType.FLOAT))
-            elif dtype == 'bool':
-                fields.append(FieldSchema(name=column_name, dtype=DataType.BOOL))
-            else:
-                fields.append(FieldSchema(name=column_name, dtype=DataType.VARCHAR, max_length=65535))
-        return fields
-
-    def _insert_data(self, collection: Collection, df: pd.DataFrame, fields: List[FieldSchema]):
-        entities = []
-        for _, row in df.iterrows():
-            entity = {}
-            for field in fields:
-                if field.dtype == DataType.FLOAT_VECTOR:
-                    entity[field.name] = row[field.name].tolist()
-                else:
-                    entity[field.name] = row[field.name]
-            entities.append(entity)
-        collection.insert(entities)
+            raise ValueError("mode must be 'insert' or 'import'")
+        logger.info(f"数据集 '{self.name}' 已成功写入 Milvus")
 
 
 def list_datasets() -> List[Dict[str, Union[str, Dict]]]:
