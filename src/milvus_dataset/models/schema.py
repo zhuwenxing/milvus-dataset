@@ -1,4 +1,4 @@
-from pydantic import BaseModel, create_model, Field, validator
+from pydantic import BaseModel, create_model, Field, validator, field_validator
 from typing import Dict, Any, List, Union, Optional
 from enum import IntEnum
 
@@ -42,7 +42,7 @@ class DatasetSchema:
 
         model = create_model('DynamicModel', **fields)
         for validator_name, validator_func in validators.items():
-            setattr(model, validator_name, validator(field_name)(classmethod(validator_func)))
+            setattr(model, validator_name, field_validator(field_name)(classmethod(validator_func)))
 
         return model
 
@@ -65,7 +65,7 @@ class DatasetSchema:
             MilvusDataType.DOUBLE: (float, constraints),
             MilvusDataType.STRING: (str, constraints),
             MilvusDataType.VARCHAR: (str, constraints),
-            MilvusDataType.JSON: (Dict[str, Any], constraints),
+            MilvusDataType.JSON: (Any, constraints),
             MilvusDataType.ARRAY: (List[Any], constraints),
             MilvusDataType.BINARY_VECTOR: (List[int], constraints),
             MilvusDataType.FLOAT_VECTOR: (List[float], constraints),

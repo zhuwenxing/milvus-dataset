@@ -1,12 +1,23 @@
 import json
 import threading
+import time
 from pathlib import Path
 import numpy as np
 import fsspec
+import s3fs
+import tempfile
+import os
+import boto3
+from botocore.exceptions import ClientError
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import tempfile
+import io
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import botocore
 from fsspec.spec import AbstractFileSystem
 from enum import Enum
-from pymilvus import FieldSchema, CollectionSchema, DataType
+from pymilvus import FieldSchema, CollectionSchema, DataType, connections, BulkInsertState
 from pydantic import BaseModel, create_model
 from typing import Dict, Any, Optional, Union, List
 import pandas as pd
@@ -177,7 +188,7 @@ class Dataset:
 
     def _verify_schema(self, data: Union[pd.DataFrame, Dict, List[Dict]]):
         # if column is auto id, remove it from schema
-        # column 不能多，也不能少
+        # column 不能多，也不能少, 如果是dynamic field,那么可以不验证。
 
         if isinstance(data, pd.DataFrame):
             for field in self._schema.fields:
@@ -356,29 +367,51 @@ class DatasetDict(dict):
 
     def save(self, destination: StorageConfig):
         """
-        Save the dataset by copying all files to a specified destination.
+        Save the dataset by copying all files to a specified S3/MinIO destination using s3fs.
 
         Args:
             destination (StorageConfig): The storage configuration for the destination where the dataset should be saved.
         """
-        dest_fs = _create_filesystem(destination)
+        # Assume destination is S3/MinIO
+        s3 = s3fs.S3FileSystem(**destination.options)
+
+        def copy_file(src_file, dest_path):
+            file_name = os.path.basename(src_file)
+            dest_file = f"{dest_path}/{file_name}"
+            try:
+                logger.info(f"Starting to copy {src_file} to {dest_file}")
+
+                # For S3 to S3 transfer
+                if isinstance(self.datasets['train'].fs, s3fs.S3FileSystem):
+                    s3.copy(src_file, dest_file)
+                    logger.info(f"Successfully copied {file_name} to {dest_path} using S3 to S3 transfer")
+                else:
+                    # For local to S3 transfer
+                    with tempfile.NamedTemporaryFile() as temp_file:
+                        self.datasets['train'].fs.get(src_file, temp_file.name)
+                        s3.put(temp_file.name, dest_file)
+                    logger.info(f"Successfully copied {file_name} to {dest_path} using local to S3 transfer")
+            except Exception as e:
+                logger.error(f"Error copying {file_name}: {str(e)}")
+                raise
 
         for split, dataset in self.datasets.items():
             source_path = f"{dataset.root_path}/{dataset.name}/{split}"
             dest_path = f"{destination.root_path}/{dataset.name}/{split}"
 
             # Ensure the destination directory exists
-            dest_fs.makedirs(dest_path, exist_ok=True)
+            s3.makedirs(dest_path, exist_ok=True)
 
             # Copy all files from source to destination
             for file in dataset.fs.glob(f"{source_path}/*.parquet"):
-                logger.info(f"Copying file: {file}")
-                file_name = Path(file).name
-                with dataset.fs.open(file, 'rb') as source_file:
-                    with dest_fs.open(f"{dest_path}/{file_name}", 'wb') as dest_file:
-                        dest_file.write(source_file.read())
-
-            logger.info(f"Saved {split} split to {dest_path}")
+                try:
+                    copy_file(file, dest_path)
+                except Exception as e:
+                    logger.error(f"Failed to copy {file}: {str(e)}")
+                    # Optionally, you might want to break the loop or continue
+                    # depending on how you want to handle file copy failures
+                    # break  # Uncomment this if you want to stop on first error
+                    continue  # Skip to the next file on error
 
         # Copy metadata and schema files
         metadata_file = f"{self.datasets['train'].root_path}/{self.name}/metadata.json"
@@ -386,12 +419,13 @@ class DatasetDict(dict):
 
         for file in [metadata_file, schema_file]:
             if self.datasets['train'].fs.exists(file):
-                file_name = Path(file).name
-                dest_file_path = f"{destination.root_path}/{self.name}/{file_name}"
-                with self.datasets['train'].fs.open(file, 'rb') as source_file:
-                    with dest_fs.open(dest_file_path, 'wb') as dest_file:
-                        dest_file.write(source_file.read())
-                logger.info(f"Saved {file_name} to {dest_file_path}")
+                dest_path = f"{destination.root_path}/{self.name}"
+                try:
+                    copy_file(file, dest_path)
+                except Exception as e:
+                    logger.error(f"Failed to copy {file}: {str(e)}")
+                    # Decide how to handle metadata/schema file copy failures
+                    # You might want to raise an exception here as these are crucial files
 
         logger.info(f"Dataset '{self.name}' has been successfully saved to {destination.root_path}")
 
@@ -438,7 +472,7 @@ class DatasetDict(dict):
             dataset.set_schema(schema)
         logger.info(f"已为数据集 '{self.name}' 的所有分割设置schema")
 
-    def to_milvus(self, milvus_client: MilvusClient, mode='insert', milvus_storage=None):
+    def to_milvus(self, milvus_config: Dict, mode='insert', milvus_storage=None):
         """
         将数据集写入 Milvus。可以是insert， bulk import
         需要传入什么信息呢？主要就是milvus的连接信息，传入一个milvus client就行？
@@ -447,10 +481,14 @@ class DatasetDict(dict):
         :return:
         """
         # create collection
+        milvus_client = MilvusClient(**milvus_config)
+        connections.connect(**milvus_config)
         milvus_client.create_collection(
             collection_name=self.name,
             schema=self['train'].get_schema(),
         )
+        print(milvus_client.list_collections())
+
         if mode == 'insert':
             for data in self['train'].read():
                 milvus_client.insert(collection_name=self.name, data=data)
@@ -463,16 +501,37 @@ class DatasetDict(dict):
             milvus_fs = _create_filesystem(milvus_storage)
             train_files = milvus_fs.glob(f"{milvus_storage.root_path}/{self.name}/train/*.parquet")
             # restful api to import data
+            task_ids = []
             for file in train_files:
+                file = "/".join(file.split("/")[1:])
                 logger.info(f"Importing file {file} to Milvus")
-                utility.do_bulk_insert(
+                task_id = utility.do_bulk_insert(
                     collection_name=self.name,
-                    file_path=[file],
+                    files=[file],
                 )
-                logger.info(f"File {file} has been imported to Milvus")
+                task_ids.append(task_id)
+                logger.info(f"Create a bulk inert task, task id: {task_id}")
+            # list all import task and wait complete
+            while len(task_ids) > 0:
+                logger.info("Wait 1 second to check bulk insert tasks state...")
+                time.sleep(1)
+                for id in task_ids:
+                    state = utility.get_bulk_insert_state(task_id=id)
+                    if state.state == BulkInsertState.ImportFailed or state.state == BulkInsertState.ImportFailedAndCleaned:
+                        logger.info(f"The task {state.task_id} failed, reason: {state.failed_reason}")
+                        task_ids.remove(id)
+                    elif state.state == BulkInsertState.ImportCompleted:
+                        logger.info(f"The task {state.task_id} completed with state {state}")
+                        task_ids.remove(id)
         else:
             raise ValueError("mode must be 'insert' or 'import'")
+
         logger.info(f"数据集 '{self.name}' 已成功写入 Milvus")
+        c = Collection(self.name)
+        logger.info(f"collection schema {c.schema}")
+        logger.info(f"collection num entities {c.num_entities}")
+
+
 
 
 def list_datasets() -> List[Dict[str, Union[str, Dict]]]:
