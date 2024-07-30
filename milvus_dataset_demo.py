@@ -31,10 +31,10 @@ dataset = load_dataset("test_dataset", schema=schema)
 print(dataset)
 
 train_data = dataset['train']
-dataset_size = 40100
+dataset_size = 100000
 t0 = time.time()
 data = {
-    "id": range(dataset_size),
+    "id": list(range(dataset_size)),
     "text": [f"text_{i}" for i in range(dataset_size)],
     "vector": [[random.random() for _ in range(128)] for i in range(dataset_size)],
 }

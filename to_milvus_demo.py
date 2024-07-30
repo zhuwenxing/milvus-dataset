@@ -27,7 +27,7 @@ if __name__ == "__main__":
     dataset = load_dataset("openai_large_demo_2", schema=schema)
     print(dataset)
     train_data = dataset['train']
-    dataset_size = 5000
+    dataset_size = 50000
     data = {
         "id": range(dataset_size),
         "text": [f"text_{i}" for i in range(dataset_size)],

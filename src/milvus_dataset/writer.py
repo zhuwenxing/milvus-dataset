@@ -8,7 +8,7 @@ import tempfile
 from .logging import logger
 
 class DatasetWriter:
-    def __init__(self, dataset, target_file_size_mb=5):
+    def __init__(self, dataset, target_file_size_mb=512):
         self.dataset = dataset
         self.target_file_size_bytes = target_file_size_mb * 1024 * 1024
         self.rows_per_file = None

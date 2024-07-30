@@ -72,7 +72,7 @@ def create_field_model(field_schema: FieldSchema):
             field_type = conlist(float if field_schema.dtype == DataType.FLOAT_VECTOR else int,
                                  min_length=field_schema.dim, max_length=field_schema.dim)
 
-    return (field_type, Field(..., **field_kwargs))
+    return field_type, Field(..., **field_kwargs)
 
 
 def create_schema_model(field_schemas: List[FieldSchema]):

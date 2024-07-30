@@ -17,6 +17,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import botocore
 from fsspec.spec import AbstractFileSystem
 from enum import Enum
+from pydantic import BaseModel, Field, create_model, conlist, constr, ValidationError, field_validator, model_validator, TypeAdapter
+from typing import List, Dict, Any, Union
 from pymilvus import FieldSchema, CollectionSchema, DataType, connections, BulkInsertState
 from pydantic import BaseModel, create_model
 from typing import Dict, Any, Optional, Union, List
@@ -186,21 +188,115 @@ class Dataset:
             self._schema = self._load_schema()
         return self._schema
 
+    def create_schema_model(self):
+        """创建一个 Pydantic 模型，用于验证数据集的schema。"""
+
+        class SparseVectorCOO(BaseModel):
+            indices: List[int]
+            values: List[float]
+        def get_base_type(data_type: DataType):
+            if data_type in [DataType.INT8, DataType.INT16, DataType.INT32, DataType.INT64]:
+                return int
+            elif data_type in [DataType.FLOAT, DataType.DOUBLE]:
+                return float
+            elif data_type in [DataType.STRING, DataType.VARCHAR]:
+                return str
+            elif data_type == DataType.BOOL:
+                return bool
+            elif data_type == DataType.JSON:
+                return Dict[str, Any]
+            else:
+                return Any
+        def create_field_model(field_schema: FieldSchema):
+            field_type = get_base_type(field_schema.dtype)
+            field_kwargs = {}
+
+            if field_schema.dtype == DataType.VARCHAR and field_schema.max_length:
+                field_type = constr(max_length=field_schema.max_length)
+
+            elif field_schema.dtype == DataType.ARRAY:
+                element_type = get_base_type(field_schema.element_type)
+                if field_schema.max_capacity:
+                    field_type = conlist(element_type, max_length=field_schema.max_capacity)
+                else:
+                    field_type = List[element_type]
+
+                if field_schema.element_type == DataType.VARCHAR and field_schema.max_length:
+                    field_type = conlist(constr(max_length=field_schema.max_length), max_length=field_schema.max_capacity)
+
+            elif field_schema.dtype in [DataType.FLOAT_VECTOR, DataType.BINARY_VECTOR]:
+                if field_schema.dim:
+                    field_type = conlist(float if field_schema.dtype == DataType.FLOAT_VECTOR else int,
+                                         min_length=field_schema.dim, max_length=field_schema.dim)
+
+            elif field_schema.dtype in [DataType.BINARY_VECTOR]:
+                if field_schema.dim:
+                    field_type = conlist(float if field_schema.dtype == DataType.FLOAT_VECTOR else int,
+                                         min_length=field_schema.dim/8, max_length=field_schema.dim/8)
+
+            elif field_schema.dtype in [DataType.FLOAT16_VECTOR, DataType.BFLOAT16_VECTOR]:
+                if field_schema.dim:
+                    field_type = conlist(float if field_schema.dtype == DataType.FLOAT_VECTOR else int,
+                                         min_length=field_schema.dim*2, max_length=field_schema.dim*2)
+            elif field_schema.dtype in [DataType.SPARSE_FLOAT_VECTOR]:
+                field_type = Union[Dict[int, float], SparseVectorCOO]
+
+            return field_type, Field(..., **field_kwargs)
+
+        def create_array_validator(element_type: DataType):
+            base_type = get_base_type(element_type)
+
+            def validate_array(cls, v):
+                for item in v:
+                    if not isinstance(item, base_type):
+                        raise ValueError(
+                            f"All items must be of type {base_type.__name__}. Found item of type {type(item).__name__}")
+                return v
+
+            return validate_array
+
+        fields = {}
+        validators = {}
+        for schema in self._schema.fields:
+            fields[schema.name] = create_field_model(schema)
+            if schema.dtype == DataType.ARRAY:
+                validators[f'validate_{schema.name}'] = field_validator(schema.name)(
+                    create_array_validator(schema.element_type))
+
+        RowModel = create_model('DynamicSchemaModel', **fields, __validators__=validators)
+
+        class DataFrameModel(BaseModel):
+            data: List[RowModel]
+
+            @model_validator(mode="before")
+            def validate_dataframe(cls, values):
+                data = values.get('data')
+                if isinstance(data, pd.DataFrame):
+                    values['data'] = data.to_dict('records')
+                return values
+
+            class Config:
+                arbitrary_types_allowed = True
+
+        return DataFrameModel, RowModel
+
     def _verify_schema(self, data: Union[pd.DataFrame, Dict, List[Dict]]):
         # if column is auto id, remove it from schema
         # column 不能多，也不能少, 如果是dynamic field,那么可以不验证。
 
-        if isinstance(data, pd.DataFrame):
-            for field in self._schema.fields:
-                if field.auto_id:
-                    continue
-                if field.name not in data.columns:
-                    raise ValueError(f"数据中缺少字段 '{field.name}'。")
-        elif isinstance(data, dict) or (isinstance(data, list) and isinstance(data[0], dict)):
-            sample = data if isinstance(data, dict) else data[0]
-            for field in self._schema.fields:
-                if field.name not in sample:
-                    raise ValueError(f"数据中缺少字段 '{field.name}'。")
+        if isinstance(data, dict) or (isinstance(data, list)):
+            data = pd.DataFrame(data)
+        DataFrameModel, RowModel = self.create_schema_model()
+        try:
+            t0 = time.time()
+            rows = data.to_dict('records')
+            row_list_adapter = TypeAdapter(List[RowModel])
+            row_list_adapter.validate_python(rows)
+            tt = time.time() - t0
+            logger.info(f"数据符合schema, 验证耗时: {tt:.6f} 秒 for {len(data)} rows")
+
+        except ValidationError as e:
+            raise ValueError(f"数据不符合schema: {e}")
 
     def _get_summary(self) -> Dict[str, Union[str, int, Dict]]:
         if self._summary is None:
@@ -295,8 +391,14 @@ class Dataset:
         summary = self._get_summary()
         return summary['num_files']
 
-    def write(self, data: Union[pd.DataFrame, Dict, List[Dict]], mode: str = 'append', verify_schema: bool = False):
+    def write(self, data: Union[pd.DataFrame, Dict, List[Dict]], mode: str = 'append', verify_schema: bool = True):
         logger.info(f"正在向数据集 '{self.name}' 写入数据")
+        if mode == 'overwrite':
+            files = self.fs.glob(f"{self.root_path}/{self.name}/{self.split}/*.parquet")
+            logger.info(f"删除现有数据集 '{self.name}' 的 '{self.split}' 分割: {files}")
+            self.fs.rm(f"{self.root_path}/{self.name}/{self.split}", recursive=True)
+            self._ensure_split_exists()
+
         if self._schema is None:
             self._schema = self._load_schema()
         if self._schema is None:
@@ -304,7 +406,8 @@ class Dataset:
         if self.split not in ['train', 'test']:
             raise ValueError("只允许向'train'和'test'分割写入数据。")
         if verify_schema:
-            self._verify_schema(data)
+            if self.split == 'train':
+                self._verify_schema(data)
         result = self.writer.write(data, mode)
         self._summary = None
         return result
