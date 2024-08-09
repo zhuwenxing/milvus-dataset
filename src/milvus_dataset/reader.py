@@ -28,7 +28,11 @@ class DatasetReader:
 
             if mode == 'full':
                 return self._read_full(path)
-            elif mode in ['stream', 'batch']:
+            elif mode == 'stream':
+                return self._read_stream(path, 1)
+            elif mode == 'batch':
+                if batch_size is None:
+                    raise ValueError("Batch size must be provided when using 'batch' read mode.")
                 return self._read_stream(path, batch_size)
             else:
                 raise ValueError("Invalid read mode. Expected 'stream', 'batch', or 'full'.")
