@@ -10,6 +10,16 @@ import concurrent.futures
 from tqdm import tqdm
 from contextlib import contextmanager
 
+try:
+    import cupy as cp
+    from pylibraft.neighbors.brute_force import knn
+    from pylibraft.common import DeviceResources
+
+    GPU_AVAILABLE = True
+except ImportError:
+    GPU_AVAILABLE = False
+
+
 class TempFolderManager:
     def __init__(self, neighbors):
         self.neighbors = neighbors
@@ -28,7 +38,6 @@ class TempFolderManager:
             if self.neighbors.fs.exists(tmp_path):
                 logger.debug(f"Removing temporary folder: {tmp_path}")
                 self.neighbors.fs.rm(tmp_path, recursive=True)
-
 
 
 class NeighborsComputation:
@@ -56,28 +65,46 @@ class NeighborsComputation:
         return b
 
     def compute_neighbors(self, test_data, train_data, vector_field_name, tmp_path):
-        neighbors = self.dataset_dict['neighbors']
         test_emb = np.array(test_data[vector_field_name].tolist())
         train_emb = np.array(train_data[vector_field_name].tolist())
 
-        distance = pairwise_distances(train_emb, Y=test_emb, metric=self.metric_type, n_jobs=-1)
-        distance = np.array(distance.T, order='C')
         test_idx = test_data["id"].tolist()
-        idx = train_data["id"].tolist()
+        train_idx = train_data["id"].tolist()
 
         t0 = time.time()
-        distance_sorted_arg = self.fast_sort(distance)
-        logger.info(f"Sort cost time: {time.time() - t0}")
 
-        top_k = distance_sorted_arg[:, :self.top_k]
-        result = np.empty(top_k.shape, dtype=[('idx', "i8"), ('distance', "f8")])
-        for index, value in np.ndenumerate(top_k):
-            result[index] = (idx[value], distance[index[0], value])
+        if GPU_AVAILABLE:
+            logger.info("Using GPU for neighbor computation")
+            test_emb_gpu = cp.array(test_emb, dtype=cp.float32)
+            train_emb_gpu = cp.array(train_emb, dtype=cp.float32)
+
+            with DeviceResources() as res:
+                distances, indices = knn(train_emb_gpu, test_emb_gpu, k=self.top_k, metric=self.metric_type,
+                                         handle=res.handle)
+
+            distances = cp.asnumpy(distances)
+            indices = cp.asnumpy(indices)
+        else:
+            logger.info("Using CPU for neighbor computation")
+            distance = pairwise_distances(train_emb, Y=test_emb, metric=self.metric_type, n_jobs=-1)
+            distance = np.array(distance.T, order='C')
+
+            distance_sorted_arg = self.fast_sort(distance)
+            indices = distance_sorted_arg[:, :self.top_k]
+            distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
+
+        logger.info(f"Neighbor computation cost time: {time.time() - t0}")
+
+        result = np.empty(indices.shape, dtype=[('idx', "i8"), ('distance', "f8")])
+        for i in range(indices.shape[0]):
+            for j in range(indices.shape[1]):
+                result[i, j] = (train_idx[indices[i, j]], distances[i, j])
 
         df_neighbors = pd.DataFrame({
             "id": test_idx,
             "neighbors_id": result.tolist()
         })
+
         file_name = f"{tmp_path}/neighbors_{len(self.neighbors.fs.ls(tmp_path))}.parquet"
         logger.info(f"Writing neighbors to {file_name}")
         with self.neighbors.fs.open(file_name, 'wb') as f:
@@ -118,7 +145,6 @@ class NeighborsComputation:
             df.to_parquet(f, engine='pyarrow', compression='snappy')
         logger.info(f"Merge cost time: {time.time() - t0}")
         return final_file_name
-
 
     def merge_final_results(self, partial_files):
         logger.info("Merging all partial results into a single file")
@@ -161,8 +187,8 @@ class NeighborsComputation:
                 logger.info(f"Computing ground truth for batch, test size: {len(test_data)}")
                 with temp_manager.temp_folder(f"tmp_{i}") as tmp_test_split_path:
                     for j, train_train in enumerate(train_data_batches):
-                            logger.info(f"Computing ground truth for batch, train size: {len(train_train)}")
-                            self.compute_neighbors(test_data, train_train, self.vector_field_name, tmp_test_split_path)
+                        logger.info(f"Computing ground truth for batch, train size: {len(train_train)}")
+                        self.compute_neighbors(test_data, train_train, self.vector_field_name, tmp_test_split_path)
 
                     merged_file_name = f"{tmp_path}/neighbors-{self.query_expr}-{i}.parquet"
                     partial_file = self.merge_neighbors(merged_file_name, tmp_test_split_path)

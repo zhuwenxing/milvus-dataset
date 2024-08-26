@@ -19,6 +19,9 @@ dependencies = [
     "dask[complete]>=2024.7.0",
     "grpcio>=1.63.0",
     "loguru>=0.7.2",
+    "torch>=2.2.2",
+    "transformers>=4.44.2",
+    "matplotlib>=3.9.2",
 ]
 requires-python = "<=3.12,>=3.10"
 readme = "README.md"

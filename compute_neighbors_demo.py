@@ -1,6 +1,6 @@
 import random
 import time
-
+from pymilvus import FieldSchema, CollectionSchema, DataType
 from milvus_dataset import list_datasets, load_dataset, ConfigManager, StorageType
 
 config_manager = ConfigManager()
@@ -12,7 +12,14 @@ ConfigManager().init_storage(
     storage_type=StorageType.LOCAL,
 )
 
-dataset = load_dataset("openai_large_v7")
+
+id_field = FieldSchema("id", DataType.INT64, is_primary=True)
+vector_field = FieldSchema("emb", DataType.FLOAT_VECTOR, dim=128)
+text_field = FieldSchema("text", DataType.VARCHAR, max_length=200)
+schema = CollectionSchema(fields=[id_field, vector_field, text_field], description="我的数据集schema")
+
+
+dataset = load_dataset("openai_large_v7", schema=schema)
 print(dataset)
 train_data = dataset['train']
 dataset_size = 50000

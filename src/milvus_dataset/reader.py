@@ -1,7 +1,7 @@
 import pandas as pd
 import pyarrow.parquet as pq
 from typing import Optional, Generator, Any
-from .logging import logger
+from .log_config import logger
 
 
 class DatasetReader:

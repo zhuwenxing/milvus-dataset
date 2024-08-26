@@ -5,7 +5,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from typing import Union, Dict, List
 import tempfile
-from .logging import logger
+from .log_config import logger
 
 class DatasetWriter:
     def __init__(self, dataset, target_file_size_mb=512):

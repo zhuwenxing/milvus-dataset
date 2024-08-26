@@ -4,7 +4,7 @@ from fsspec.spec import AbstractFileSystem
 from enum import Enum
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, Union, List
-from .logging import logger
+from .log_config import logger
 
 class StorageType(Enum):
     LOCAL = "local"

@@ -30,19 +30,16 @@ from pyarrow import Schema
 from threading import Lock
 from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType, utility
 from .storage import StorageType, StorageConfig, _create_filesystem
-from .logging import logger
+from .log_config import logger
 from .writer import DatasetWriter
 from .reader import DatasetReader
 from .neighbors import NeighborsComputation
 
 
 
-
-
 class DatasetConfig(BaseModel):
     storage: StorageConfig
     default_schema: Optional[Dict[str, Any]] = None
-
 
 class ConfigManager:
     _instance = None
