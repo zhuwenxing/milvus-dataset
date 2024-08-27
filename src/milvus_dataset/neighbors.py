@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 from sklearn.metrics.pairwise import pairwise_distances
-from .logging import logger
+from .log_config import logger
 import time
 import numba as nb
 import os
@@ -77,10 +77,8 @@ class NeighborsComputation:
             logger.info("Using GPU for neighbor computation")
             test_emb_gpu = cp.array(test_emb, dtype=cp.float32)
             train_emb_gpu = cp.array(train_emb, dtype=cp.float32)
-
-            with DeviceResources() as res:
-                distances, indices = knn(train_emb_gpu, test_emb_gpu, k=self.top_k, metric=self.metric_type,
-                                         handle=res.handle)
+        
+            distances, indices = knn(train_emb_gpu, test_emb_gpu, k=self.top_k, metric=self.metric_type)
 
             distances = cp.asnumpy(distances)
             indices = cp.asnumpy(indices)

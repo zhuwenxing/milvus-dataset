@@ -22,8 +22,11 @@ dependencies = [
     "torch>=2.2.2",
     "transformers>=4.44.2",
     "matplotlib>=3.9.2",
+    "s3fs>=2024.6.1",
+    "pylibraft-cu12>=24.8.1",
+    "cupy-cuda12x>=13.3.0",
 ]
-requires-python = "<=3.12,>=3.10"
+requires-python = "==3.10.*"
 readme = "README.md"
 license = {text = "MIT"}
 
