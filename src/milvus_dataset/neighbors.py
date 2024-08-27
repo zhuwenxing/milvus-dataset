@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 from sklearn.metrics.pairwise import pairwise_distances
+from pylibraft.common import Handle
+from pylibraft.distance import pairwise_distance as raft_pairwise_distance
 from .log_config import logger
 import time
 import numba as nb
@@ -13,8 +15,6 @@ from contextlib import contextmanager
 try:
     import cupy as cp
     from pylibraft.neighbors.brute_force import knn
-    from pylibraft.common import DeviceResources
-
     GPU_AVAILABLE = True
 except ImportError:
     GPU_AVAILABLE = False
@@ -57,7 +57,7 @@ class NeighborsComputation:
         return max(1, (total_rows + self.max_rows_per_epoch - 1) // self.max_rows_per_epoch)
 
     @staticmethod
-    @nb.njit('int64[:,::1](float64[:,::1])', parallel=True)
+    @nb.njit('int64[:,::1](float32[:,::1])', parallel=True)
     def fast_sort(a):
         b = np.empty(a.shape, dtype=np.int64)
         for i in nb.prange(a.shape[0]):
@@ -77,16 +77,28 @@ class NeighborsComputation:
             logger.info("Using GPU for neighbor computation")
             test_emb_gpu = cp.array(test_emb, dtype=cp.float32)
             train_emb_gpu = cp.array(train_emb, dtype=cp.float32)
-        
-            distances, indices = knn(train_emb_gpu, test_emb_gpu, k=self.top_k, metric=self.metric_type)
 
-            distances = cp.asnumpy(distances)
-            indices = cp.asnumpy(indices)
+            if self.top_k <= 1024:
+                distances, indices = knn(train_emb_gpu, test_emb_gpu, k=self.top_k, metric=self.metric_type)
+
+                distances = cp.asnumpy(distances)
+                indices = cp.asnumpy(indices)
+            else:
+                handle = Handle()
+                distance = raft_pairwise_distance(train_emb_gpu, test_emb_gpu, metric="euclidean", handle=handle)
+                handle.sync()
+                distance = cp.asnumpy(distance)
+                distance = np.array(distance.T, order='C')
+                distance_sorted_arg = self.fast_sort(distance)
+                indices = distance_sorted_arg[:, :self.top_k]
+                distances = np.array([distance[i, indices[i]] for i in range(len(indices))])                
+
         else:
             logger.info("Using CPU for neighbor computation")
+            test_emb_cpu = np.array(test_emb, dtype=np.float32)
+            train_emb_cpu = np.array(train_emb, dtype=np.float32)
             distance = pairwise_distances(train_emb, Y=test_emb, metric=self.metric_type, n_jobs=-1)
-            distance = np.array(distance.T, order='C')
-
+            distance = np.array(distance.T, order='C', dtype=np.float32)
             distance_sorted_arg = self.fast_sort(distance)
             indices = distance_sorted_arg[:, :self.top_k]
             distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
@@ -174,7 +186,7 @@ class NeighborsComputation:
     def compute_ground_truth(self):
         logger.info(f"Computing ground truth")
 
-        test_data_batches = list(self.dataset_dict['test'].read(mode='batch', batch_size=1000))
+        test_data_batches = list(self.dataset_dict['test'].read(mode='batch', batch_size=2000))
         train_data_batches = list(self.dataset_dict['train'].read(mode='batch', batch_size=self.max_rows_per_epoch))
         logger.info(f"train data batches num: {len(train_data_batches)}")
 

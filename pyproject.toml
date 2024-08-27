@@ -19,17 +19,21 @@ dependencies = [
     "dask[complete]>=2024.7.0",
     "grpcio>=1.63.0",
     "loguru>=0.7.2",
-    "torch>=2.2.2",
-    "transformers>=4.44.2",
     "matplotlib>=3.9.2",
     "s3fs>=2024.6.1",
-    "pylibraft-cu12>=24.8.1",
-    "cupy-cuda12x>=13.3.0",
 ]
 requires-python = "==3.10.*"
 readme = "README.md"
 license = {text = "MIT"}
 
+[project.optional-dependencies]
+gpu = [
+    "pylibraft-cu12>=24.8.1",
+    "cupy-cuda12x>=13.3.0",
+]
+emb = [
+    "transformers>=4.44.2",
+]
 [build-system]
 requires = ["pdm-pep517>=1.0.0"]
 build-backend = "pdm.pep517.api"
