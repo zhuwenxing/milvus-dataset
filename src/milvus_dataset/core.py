@@ -567,8 +567,8 @@ class DatasetDict(dict):
         """返回数据集字典的原始字典表示"""
         return self.summary()
 
-    def compute_neighbors(self, vector_field_name, query_expr=None, top_k=1000, **kwargs):
-        neighbors_computation = NeighborsComputation(self, vector_field_name, query_expr=query_expr, top_k=top_k,
+    def compute_neighbors(self, vector_field_name, pk_field_name="id", query_expr=None, top_k=1000, **kwargs):
+        neighbors_computation = NeighborsComputation(self, vector_field_name,pk_field_name=pk_field_name, query_expr=query_expr, top_k=top_k,
                                                      **kwargs)
         neighbors_computation.compute_ground_truth()
 

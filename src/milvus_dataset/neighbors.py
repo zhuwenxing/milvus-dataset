@@ -42,16 +42,17 @@ class TempFolderManager:
 
 
 class NeighborsComputation:
-    def __init__(self, dataset_dict, vector_field_name, query_expr=None, top_k: int = 1000, metric_type: str = "cosine",
+    def __init__(self, dataset_dict, vector_field_name, pk_field_name="id", query_expr=None, top_k: int = 1000, metric_type: str = "cosine",
                  max_rows_per_epoch: int = 1000000):
         self.dataset_dict = dataset_dict
         self.vector_field_name = vector_field_name
+        self.pk_field_name = pk_field_name
         self.query_expr = query_expr
         self.top_k = top_k
         self.metric_type = metric_type
         self.max_rows_per_epoch = max_rows_per_epoch
         self.neighbors = self.dataset_dict['neighbors']
-        self.file_name = f"{self.neighbors.root_path}/{self.neighbors.name}/{self.neighbors.split}/neighbors-{self.query_expr}.parquet"
+        self.file_name = f"{self.neighbors.root_path}/{self.neighbors.name}/{self.neighbors.split}/neighbors-expr-{self.query_expr}-metric-{metric_type}.parquet"
 
     def _calculate_num_epochs(self) -> int:
         total_rows = self.dataset_dict['train'].get_total_rows('train')
@@ -69,8 +70,8 @@ class NeighborsComputation:
         test_emb = np.array(test_data[vector_field_name].tolist())
         train_emb = np.array(train_data[vector_field_name].tolist())
 
-        test_idx = test_data["id"].tolist()
-        train_idx = train_data["id"].tolist()
+        test_idx = test_data[self.pk_field_name].tolist()
+        train_idx = train_data[self.pk_field_name].tolist()
 
         t0 = time.time()
 
@@ -86,7 +87,7 @@ class NeighborsComputation:
                 indices = cp.asnumpy(indices)
             else:
                 handle = Handle()
-                distance = raft_pairwise_distance(train_emb_gpu, test_emb_gpu, metric="euclidean", handle=handle)
+                distance = raft_pairwise_distance(train_emb_gpu, test_emb_gpu, metric=self.metric_type, handle=handle)
                 handle.sync()
                 distance = cp.asnumpy(distance)
                 distance = np.array(distance.T, order='C')
@@ -106,13 +107,13 @@ class NeighborsComputation:
 
         logger.info(f"Neighbor computation cost time: {time.time() - t0}")
 
-        result = np.empty(indices.shape, dtype=[('idx', "i8"), ('distance', "f8")])
+        result = np.empty(indices.shape, dtype=[(self.pk_field_name, "i8"), ('distance', "f8")])
         for i in range(indices.shape[0]):
             for j in range(indices.shape[1]):
                 result[i, j] = (train_idx[indices[i, j]], distances[i, j])
 
         df_neighbors = pd.DataFrame({
-            "id": test_idx,
+            self.pk_field_name: test_idx,
             "neighbors_id": result.tolist()
         })
 
@@ -131,13 +132,13 @@ class NeighborsComputation:
         for f in file_list:
             with neighbors.fs.open(f, 'rb') as f:
                 df_n = pq.read_table(f).to_pandas()
-            test_idx = np.array(df_n["id"].tolist())
+            test_idx = np.array(df_n[self.pk_field_name].tolist())
             tmp_neighbors_id = np.array(df_n["neighbors_id"].tolist())
             if neighbors_id is None:
                 neighbors_id = tmp_neighbors_id
             else:
                 neighbors_id = np.concatenate((neighbors_id, tmp_neighbors_id), axis=1)
-        result = np.empty(neighbors_id.shape, dtype=[('idx', "i8"), ('distance', "f8")])
+        result = np.empty(neighbors_id.shape, dtype=[(self.pk_field_name, "i8"), ('distance', "f8")])
         for index, value in np.ndenumerate(neighbors_id):
             result[index] = (neighbors_id[index][0], neighbors_id[index][1])
         logger.info(f"result \n: {result}")
@@ -147,7 +148,7 @@ class NeighborsComputation:
             final_result[index] = sorted_result[index][0]
         logger.info(f"final_result \n: {final_result}")
         df = pd.DataFrame(data={
-            "id": test_idx,
+            self.pk_field_name: test_idx,
             "neighbors_id": final_result[:, :self.top_k].tolist()
         })
         logger.info(f"Writing neighbors to {final_file_name}")
@@ -169,7 +170,7 @@ class NeighborsComputation:
             dfs = list(tqdm(executor.map(read_partial_file, partial_files), total=len(partial_files)))
 
         final_df = pd.concat(dfs, ignore_index=True)
-        final_df = final_df.sort_values('id').reset_index(drop=True)
+        final_df = final_df.sort_values(self.pk_field_name).reset_index(drop=True)
 
         final_file_name = self.file_name
         logger.info(f"Writing final merged results to {final_file_name}")

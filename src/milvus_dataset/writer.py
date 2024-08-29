@@ -11,7 +11,7 @@ import tempfile
 from .log_config import logger
 
 class DatasetWriter:
-    def __init__(self, dataset, target_file_size_mb=512, num_buffers=4, queue_size=10):
+    def __init__(self, dataset, target_file_size_mb=512, num_buffers=10, queue_size=20):
         self.dataset = dataset
         self.target_file_size_bytes = target_file_size_mb * 1024 * 1024
         self.rows_per_file = None

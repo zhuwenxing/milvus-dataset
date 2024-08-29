@@ -5,7 +5,7 @@
 groups = ["default", "lint", "test"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:f949f229f07f7495156ca9e50b8fda8b5ce1f82cc5a7bdf4fd8ed6a6416c2937"
+content_hash = "sha256:05b192c0a753a924baf9824fcc2a58a1c45a0f675ee33d82b0129a8bb34c4a88"
 
 [[metadata.targets]]
 requires_python = "==3.10.*"
@@ -414,6 +414,24 @@ dependencies = [
 files = [
     {file = "distributed-2024.8.1-py3-none-any.whl", hash = "sha256:03f5d3fe7a407cdc16dd2bc25dff4900b72f8dee896b7174eebe8a10b42d8c06"},
     {file = "distributed-2024.8.1.tar.gz", hash = "sha256:82394ceb68b91118717148dbe182cff679f32621812bd7b2bc27eaaa8589f962"},
+]
+
+[[package]]
+name = "duckdb"
+version = "1.0.0"
+requires_python = ">=3.7.0"
+summary = "DuckDB in-process database"
+groups = ["default"]
+files = [
+    {file = "duckdb-1.0.0-cp310-cp310-macosx_12_0_arm64.whl", hash = "sha256:4a8ce2d1f9e1c23b9bab3ae4ca7997e9822e21563ff8f646992663f66d050211"},
+    {file = "duckdb-1.0.0-cp310-cp310-macosx_12_0_universal2.whl", hash = "sha256:19797670f20f430196e48d25d082a264b66150c264c1e8eae8e22c64c2c5f3f5"},
+    {file = "duckdb-1.0.0-cp310-cp310-macosx_12_0_x86_64.whl", hash = "sha256:b71c342090fe117b35d866a91ad6bffce61cd6ff3e0cff4003f93fc1506da0d8"},
+    {file = "duckdb-1.0.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:25dd69f44ad212c35ae2ea736b0e643ea2b70f204b8dff483af1491b0e2a4cec"},
+    {file = "duckdb-1.0.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8da5f293ecb4f99daa9a9352c5fd1312a6ab02b464653a0c3a25ab7065c45d4d"},
+    {file = "duckdb-1.0.0-cp310-cp310-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3207936da9967ddbb60644ec291eb934d5819b08169bc35d08b2dedbe7068c60"},
+    {file = "duckdb-1.0.0-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:1128d6c9c33e883b1f5df6b57c1eb46b7ab1baf2650912d77ee769aaa05111f9"},
+    {file = "duckdb-1.0.0-cp310-cp310-win_amd64.whl", hash = "sha256:02310d263474d0ac238646677feff47190ffb82544c018b2ff732a4cb462c6ef"},
+    {file = "duckdb-1.0.0.tar.gz", hash = "sha256:a2a059b77bc7d5b76ae9d88e267372deff19c291048d59450c431e166233d453"},
 ]
 
 [[package]]
