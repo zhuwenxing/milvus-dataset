@@ -2,8 +2,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 from sklearn.metrics.pairwise import pairwise_distances
-from pylibraft.common import Handle
-from pylibraft.distance import pairwise_distance as raft_pairwise_distance
+
 from .log_config import logger
 import time
 import numba as nb
@@ -13,6 +12,8 @@ from tqdm import tqdm
 from contextlib import contextmanager
 
 try:
+    from pylibraft.common import Handle
+    from pylibraft.distance import pairwise_distance as raft_pairwise_distance
     import cupy as cp
     from pylibraft.neighbors.brute_force import knn
     GPU_AVAILABLE = True
@@ -91,7 +92,7 @@ class NeighborsComputation:
                 distance = np.array(distance.T, order='C')
                 distance_sorted_arg = self.fast_sort(distance)
                 indices = distance_sorted_arg[:, :self.top_k]
-                distances = np.array([distance[i, indices[i]] for i in range(len(indices))])                
+                distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
 
         else:
             logger.info("Using CPU for neighbor computation")
