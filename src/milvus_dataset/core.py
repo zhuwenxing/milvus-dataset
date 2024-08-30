@@ -388,8 +388,8 @@ class Dataset:
         summary = self._get_summary()
         return summary['num_files']
 
-    def write(self, data: Union[pd.DataFrame, Dict, List[Dict]], mode: str = 'append', verify_schema: bool = True):
-        logger.info(f"正在向数据集 '{self.name}' 写入数据")
+    def _prepare_for_write(self, mode: str):
+        logger.info(f"正在准备向数据集 '{self.name}' 写入数据")
         if mode == 'overwrite':
             files = self.fs.glob(f"{self.root_path}/{self.name}/{self.split}/*.parquet")
             logger.info(f"删除现有数据集 '{self.name}' 的 '{self.split}' 分割: {files}")
@@ -402,10 +402,21 @@ class Dataset:
             raise ValueError("写入数据前必须设置schema。请使用set_schema()方法。")
         if self.split not in ['train', 'test']:
             raise ValueError("只允许向'train'和'test'分割写入数据。")
-        if verify_schema:
-            if self.split == 'train':
-                self._verify_schema(data)
-        result = self.writer.write(data, mode)
+        self._summary = None
+
+    def get_writer(self, mode: str = 'append', **writer_options):
+        self._prepare_for_write(mode)
+        return DatasetWriter(self,**writer_options)
+
+    def write(self, data: Union[pd.DataFrame, Dict, List[Dict]], mode: str = 'append', verify_schema: bool = True):
+        self._prepare_for_write(mode)
+
+        if verify_schema and self.split == 'train':
+            self._verify_schema(data)
+
+        with self.get_writer(mode=mode, verify_schema=False) as writer:
+            result = writer.write(data)
+
         self._summary = None
         return result
 
@@ -435,14 +446,19 @@ class Dataset:
         num_files = 0
 
         for file in self.fs.glob(f"{path}/*.parquet"):
+            logger.info(f"files in path: {file}")
             num_files += 1
-            with self.fs.open(file, 'rb') as f:
-                parquet_file = pq.ParquetFile(f)
-                total_rows += parquet_file.metadata.num_rows
-                if not schema_dict:
-                    schema = parquet_file.schema.to_arrow_schema()
-                    schema_dict = {field.name: str(field.type) for field in schema}
-                total_size += self.fs.info(file)['size']
+            try:
+                with self.fs.open(file, 'rb') as f:
+                    parquet_file = pq.ParquetFile(f)
+                    total_rows += parquet_file.metadata.num_rows
+                    if not schema_dict:
+                        schema = parquet_file.schema.to_arrow_schema()
+                        schema_dict = {field.name: str(field.type) for field in schema}
+                    total_size += self.fs.info(file)['size']
+            except Exception as e:
+                logger.error(f"Error reading file {file}: {str(e)}")
+                continue
 
         return {
             "name": self.name,
@@ -551,8 +567,8 @@ class DatasetDict(dict):
         """返回数据集字典的原始字典表示"""
         return self.summary()
 
-    def compute_neighbors(self, vector_field_name, query_expr=None, top_k=1000, **kwargs):
-        neighbors_computation = NeighborsComputation(self, vector_field_name, query_expr=query_expr, top_k=top_k,
+    def compute_neighbors(self, vector_field_name, pk_field_name="id", query_expr=None, top_k=1000, **kwargs):
+        neighbors_computation = NeighborsComputation(self, vector_field_name,pk_field_name=pk_field_name, query_expr=query_expr, top_k=top_k,
                                                      **kwargs)
         neighbors_computation.compute_ground_truth()
 
