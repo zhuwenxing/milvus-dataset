@@ -1,15 +1,15 @@
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
-import numpy as np
 
 
 # 创建示例数据和Parquet文件
-def create_sample_parquet(filename='example.parquet', num_rows=10000):
+def create_sample_parquet(filename="example.parquet", num_rows=10000):
     # 创建示例数据
     data = {
-        'id': np.arange(num_rows),
-        'value': np.random.rand(num_rows),
-        'category': np.random.choice(['A', 'B', 'C'], num_rows)
+        "id": np.arange(num_rows),
+        "value": np.random.rand(num_rows),
+        "category": np.random.choice(["A", "B", "C"], num_rows),
     }
     table = pa.Table.from_pydict(data)
 
@@ -56,7 +56,7 @@ def process_table(table):
 
 # 主函数
 def main():
-    filename = 'example.parquet'
+    filename = "example.parquet"
 
     # 创建示例Parquet文件
     create_sample_parquet(filename)

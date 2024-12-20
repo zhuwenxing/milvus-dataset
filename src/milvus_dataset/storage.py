@@ -1,15 +1,18 @@
+import os
+from enum import Enum
+from typing import Any, Dict, List, Tuple
 
 import fsspec
 from fsspec.spec import AbstractFileSystem
-from enum import Enum
 from pydantic import BaseModel
-from typing import Dict, Any, Optional, Union, List
+
 from .log_config import logger
+
 
 class StorageType(Enum):
     LOCAL = "local"
     S3 = "s3"
-    GCS = "gs"
+    GCS = "gcs"
 
 
 class StorageConfig(BaseModel):
@@ -25,21 +28,25 @@ def _create_filesystem(storage_config: StorageConfig) -> AbstractFileSystem:
     elif storage_config.type == StorageType.S3:
         try:
             fs = fsspec.filesystem("s3", **storage_config.options)
-            # 测试连接
+            # Test connection
             bucket = storage_config.root_path.split("://")[1].split("/")[0]
             try:
                 fs.ls(bucket)
                 logger.info(f"Successfully connected to existing bucket: {bucket}")
-            except Exception as e:
+            except Exception:
                 try:
                     fs.mkdir(bucket)
-                    logger.info(f"Successfully created and connected to new bucket: {bucket}")
+                    logger.info(
+                        f"Successfully created and connected to new bucket: {bucket}"
+                    )
                 except Exception as create_error:
-                    logger.error(f"Failed to create bucket {bucket}: {str(create_error)}")
+                    logger.error(
+                        f"Failed to create bucket {bucket}: {create_error!s}"
+                    )
                     raise
             return fs
         except Exception as e:
-            logger.error(f"Failed to create S3 filesystem: {str(e)}")
+            logger.error(f"Failed to create S3 filesystem: {e!s}")
             raise
     elif storage_config.type == StorageType.GCS:
         return fsspec.filesystem("gcs", **storage_config.options)
@@ -47,16 +54,12 @@ def _create_filesystem(storage_config: StorageConfig) -> AbstractFileSystem:
         raise ValueError(f"Unsupported storage type: {storage_config.type}")
 
 
-import os
-from typing import List, Tuple
-
-
 def copy_between_filesystems(
-        source_fs: AbstractFileSystem,
-        dest_fs: AbstractFileSystem,
-        source_path: str,
-        dest_path: str,
-        ignore_patterns: List[str] = None
+    source_fs: AbstractFileSystem,
+    dest_fs: AbstractFileSystem,
+    source_path: str,
+    dest_path: str,
+    ignore_patterns: List[str] = None,
 ) -> List[Tuple[str, str, str]]:
     """
     Copy files and directories from one filesystem to another.
@@ -80,13 +83,13 @@ def copy_between_filesystems(
 
     def copy_file(src: str, dst: str) -> str:
         try:
-            with source_fs.open(src, 'rb') as source_file:
-                with dest_fs.open(dst, 'wb') as dest_file:
+            with source_fs.open(src, "rb") as source_file:
+                with dest_fs.open(dst, "wb") as dest_file:
                     dest_file.write(source_file.read())
             return "Success"
         except Exception as e:
-            logger.error(f"Failed to copy {src} to {dst}: {str(e)}")
-            return f"Failed: {str(e)}"
+            logger.error(f"Failed to copy {src} to {dst}: {e!s}")
+            return f"Failed: {e!s}"
 
     def copy_recursive(src_path: str, dst_path: str):
         if should_ignore(src_path):
@@ -107,12 +110,17 @@ def copy_between_filesystems(
     return results
 
 
-# 使用示例
-def copy_data(source_config: StorageConfig, dest_config: StorageConfig,
-              source_path: str, dest_path: str,
-              ignore_patterns: List[str] = None) -> List[Tuple[str, str, str]]:
+# Example usage
+def copy_data(
+    source_config: StorageConfig,
+    dest_config: StorageConfig,
+    source_path: str,
+    dest_path: str,
+    ignore_patterns: List[str] = None,
+) -> List[Tuple[str, str, str]]:
     source_fs = _create_filesystem(source_config)
     dest_fs = _create_filesystem(dest_config)
 
-    return copy_between_filesystems(source_fs, dest_fs, source_path, dest_path, ignore_patterns)
-
+    return copy_between_filesystems(
+        source_fs, dest_fs, source_path, dest_path, ignore_patterns
+    )
