@@ -67,10 +67,8 @@ class TestMilvusDatasetE2E:
             },
             mode="overwrite",
         )
-        demo.compute_neighbors(
-            vector_field_name="vector", top_k=10, metric_type="cosine"
-        )
-        for name, split in demo.items():
+        demo.compute_neighbors(vector_field_name="vector", top_k=10, metric_type="cosine")
+        for _, split in demo.items():
             data = split.read(mode="stream")
             for d in data:
                 print(d)
@@ -83,9 +81,7 @@ class TestMilvusDatasetE2E:
                 {
                     "id": list(range(1000)),
                     "text": [f"text_{i}" for i in range(1000)],
-                    "vector": [
-                        [random.random() for _ in range(128)] for i in range(1000)
-                    ],
+                    "vector": [[random.random() for _ in range(128)] for i in range(1000)],
                 },
                 mode="overwrite",
             )
@@ -93,16 +89,12 @@ class TestMilvusDatasetE2E:
                 {
                     "id": list(range(1000)),
                     "text": [f"text_{i}" for i in range(1000)],
-                    "vector": [
-                        [random.random() for _ in range(128)] for i in range(1000)
-                    ],
+                    "vector": [[random.random() for _ in range(128)] for i in range(1000)],
                 },
                 mode="overwrite",
             )
-            demo.compute_neighbors(
-                vector_field_name="vector", top_k=10, metric_type="cosine"
-            )
-            for name, split in demo.items():
+            demo.compute_neighbors(vector_field_name="vector", top_k=10, metric_type="cosine")
+            for _, split in demo.items():
                 data = split.read(mode="batch", batch_size=100)
                 for d in data:
                     assert len(d) == 100

@@ -30,20 +30,12 @@ class TempFolderManager:
         )
 
     def ensure_dir(self, path):
-        """确保目录存在，并返回目录中的parquet文件数量
-        
-        在云存储环境下，这个方法会：
-        1. 检查并创建目录
-        2. 确保目录可见
-        3. 安全地获取目录中的parquet文件数量
-        """
         self.neighbors.fs.makedirs(path, exist_ok=True)
         try:
             # 只统计parquet文件的数量
             parquet_files = self.neighbors.fs.glob(f"{path}/*.parquet")
             return len(parquet_files)
         except FileNotFoundError:
-            # 如果目录刚创建可能还不可见，返回0
             return 0
 
     @contextmanager
@@ -84,9 +76,7 @@ class NeighborsComputation:
 
     def _calculate_num_epochs(self) -> int:
         total_rows = self.dataset_dict["train"].get_total_rows("train")
-        return max(
-            1, (total_rows + self.max_rows_per_epoch - 1) // self.max_rows_per_epoch
-        )
+        return max(1, (total_rows + self.max_rows_per_epoch - 1) // self.max_rows_per_epoch)
 
     @staticmethod
     @nb.njit("int64[:,::1](float32[:,::1])", parallel=True)
@@ -127,15 +117,11 @@ class NeighborsComputation:
                 distance = np.array(distance.T, order="C")
                 distance_sorted_arg = self.fast_sort(distance)
                 indices = distance_sorted_arg[:, : self.top_k]
-                distances = np.array(
-                    [distance[i, indices[i]] for i in range(len(indices))]
-                )
+                distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
 
         else:
             logger.info("Using CPU for neighbor computation")
-            distance = pairwise_distances(
-                train_emb, Y=test_emb, metric=self.metric_type, n_jobs=-1
-            )
+            distance = pairwise_distances(train_emb, Y=test_emb, metric=self.metric_type, n_jobs=-1)
             distance = np.array(distance.T, order="C", dtype=np.float32)
             distance_sorted_arg = self.fast_sort(distance)
             indices = distance_sorted_arg[:, : self.top_k]
@@ -143,16 +129,12 @@ class NeighborsComputation:
 
         logger.info(f"Neighbor computation cost time: {time.time() - t0}")
 
-        result = np.empty(
-            indices.shape, dtype=[(self.pk_field_name, "i8"), ("distance", "f8")]
-        )
+        result = np.empty(indices.shape, dtype=[(self.pk_field_name, "i8"), ("distance", "f8")])
         for i in range(indices.shape[0]):
             for j in range(indices.shape[1]):
                 result[i, j] = (train_idx[indices[i, j]], distances[i, j])
 
-        df_neighbors = pd.DataFrame(
-            {self.pk_field_name: test_idx, "neighbors_id": result.tolist()}
-        )
+        df_neighbors = pd.DataFrame({self.pk_field_name: test_idx, "neighbors_id": result.tolist()})
         logger.info(f"Writing neighbors to {tmp_path}")
         # 使用TempFolderManager的ensure_dir方法
         temp_manager = TempFolderManager(self.neighbors)
@@ -181,16 +163,16 @@ class NeighborsComputation:
         result = np.empty(
             neighbors_id.shape, dtype=[(self.pk_field_name, "i8"), ("distance", "f8")]
         )
-        for index, value in np.ndenumerate(neighbors_id):
+        for index, _value in np.ndenumerate(neighbors_id):
             result[index] = (neighbors_id[index][0], neighbors_id[index][1])
         logger.info(f"result \n: {result}")
         sorted_result = np.sort(result, axis=1, order=["distance"])
         final_result = np.empty(sorted_result.shape, dtype="i8")
-        for index, value in np.ndenumerate(sorted_result):
+        for index, _value in np.ndenumerate(sorted_result):
             final_result[index] = sorted_result[index][0]
         logger.info(f"final_result \n: {final_result}")
         final_distance = np.empty(sorted_result.shape, dtype="f8")
-        for index, value in np.ndenumerate(sorted_result):
+        for index, _value in np.ndenumerate(sorted_result):
             final_distance[index] = sorted_result[index][1]
 
         df = pd.DataFrame(
@@ -244,13 +226,9 @@ class NeighborsComputation:
     def compute_ground_truth(self):
         logger.info("Computing ground truth")
 
-        test_data_batches = list(
-            self.dataset_dict["test"].read(mode="batch", batch_size=2000)
-        )
+        test_data_batches = list(self.dataset_dict["test"].read(mode="batch", batch_size=2000))
         train_data_batches = list(
-            self.dataset_dict["train"].read(
-                mode="batch", batch_size=self.max_rows_per_epoch
-            )
+            self.dataset_dict["train"].read(mode="batch", batch_size=self.max_rows_per_epoch)
         )
         logger.info(f"train data batches num: {len(train_data_batches)}")
 
@@ -258,11 +236,9 @@ class NeighborsComputation:
         partial_files = []
         with temp_manager.temp_folder("tmp") as tmp_path:
             for i, test_data in enumerate(test_data_batches):
-                logger.info(
-                    f"Computing ground truth for batch, test size: {len(test_data)}"
-                )
+                logger.info(f"Computing ground truth for batch, test size: {len(test_data)}")
                 with temp_manager.temp_folder(f"tmp_{i}") as tmp_test_split_path:
-                    for j, train_train in enumerate(train_data_batches):
+                    for _, train_train in enumerate(train_data_batches):
                         logger.info(
                             f"Computing ground truth for batch, train size: {len(train_train)}"
                         )
@@ -273,11 +249,7 @@ class NeighborsComputation:
                             tmp_test_split_path,
                         )
 
-                    merged_file_name = (
-                        f"{tmp_path}/neighbors-{self.query_expr}-{i}.parquet"
-                    )
-                    partial_file = self.merge_neighbors(
-                        merged_file_name, tmp_test_split_path
-                    )
+                    merged_file_name = f"{tmp_path}/neighbors-{self.query_expr}-{i}.parquet"
+                    partial_file = self.merge_neighbors(merged_file_name, tmp_test_split_path)
                     partial_files.append(partial_file)
             self.merge_final_results(partial_files)

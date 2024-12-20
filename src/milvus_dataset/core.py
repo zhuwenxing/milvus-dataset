@@ -5,13 +5,12 @@ import time
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Union
-import os
-from huggingface_hub import HfApi
-from pathlib import Path
+
 import fsspec
 import pandas as pd
 import pyarrow.parquet as pq
 import s3fs
+from huggingface_hub import HfApi
 from pydantic import (
     BaseModel,
     Field,
@@ -53,7 +52,7 @@ class ConfigManager:
     def __new__(cls):
         with cls._lock:
             if cls._instance is None:
-                cls._instance = super(ConfigManager, cls).__new__(cls)
+                cls._instance = super().__new__(cls)
                 cls._instance.config = None
         return cls._instance
 
@@ -70,9 +69,7 @@ class ConfigManager:
             options = self._prepare_s3_options(options)
             self._verify_s3_connection(root_path, options)
         config = DatasetConfig(
-            storage=StorageConfig(
-                type=storage_type, root_path=root_path, options=options
-            )
+            storage=StorageConfig(type=storage_type, root_path=root_path, options=options)
         )
         self._initialize(config)
 
@@ -108,13 +105,9 @@ class ConfigManager:
             except Exception:
                 try:
                     fs.mkdir(bucket)
-                    logger.info(
-                        f"Successfully created and connected to new bucket: {bucket}"
-                    )
+                    logger.info(f"Successfully created and connected to new bucket: {bucket}")
                 except Exception as create_error:
-                    logger.error(
-                        f"Failed to create bucket {bucket}: {create_error!s}"
-                    )
+                    logger.error(f"Failed to create bucket {bucket}: {create_error!s}")
                     raise
 
         except Exception as e:
@@ -198,90 +191,100 @@ class Dataset:
             self._schema = self._load_schema()
         return self._schema
 
-    def create_schema_model(self):
-        """Create a Pydantic model to validate the dataset's schema."""
+    def _create_sparse_vector_model(self):
+        """Create a model for sparse vector data."""
 
         class SparseVectorCOO(BaseModel):
             indices: List[int]
             values: List[float]
 
-        def get_base_type(data_type: DataType):
-            if data_type in [
-                DataType.INT8,
-                DataType.INT16,
-                DataType.INT32,
-                DataType.INT64,
-            ]:
-                return int
-            elif data_type in [DataType.FLOAT, DataType.DOUBLE]:
-                return float
-            elif data_type in [DataType.STRING, DataType.VARCHAR]:
-                return str
-            elif data_type == DataType.BOOL:
-                return bool
-            elif data_type == DataType.JSON:
-                return Dict[str, Any]
-            else:
-                return Any
+        return SparseVectorCOO
 
-        def create_field_model(field_schema: FieldSchema):
-            field_type = get_base_type(field_schema.dtype)
-            field_kwargs = {}
+    def _get_base_type(self, data_type: DataType):
+        """Get the base Python type for a given DataType."""
+        if data_type in [
+            DataType.INT8,
+            DataType.INT16,
+            DataType.INT32,
+            DataType.INT64,
+        ]:
+            return int
+        elif data_type in [DataType.FLOAT, DataType.DOUBLE]:
+            return float
+        elif data_type in [DataType.STRING, DataType.VARCHAR]:
+            return str
+        elif data_type == DataType.BOOL:
+            return bool
+        elif data_type == DataType.JSON:
+            return Dict[str, Any]
+        else:
+            return Any
 
-            if field_schema.dtype == DataType.VARCHAR and field_schema.max_length:
-                field_type = constr(max_length=field_schema.max_length)
+    def _create_vector_field_type(self, field_schema: FieldSchema):
+        """Create field type for vector data types."""
+        if not field_schema.dim:
+            return List[float if field_schema.dtype == DataType.FLOAT_VECTOR else int]
 
-            elif field_schema.dtype == DataType.ARRAY:
-                element_type = get_base_type(field_schema.element_type)
-                if field_schema.max_capacity:
-                    field_type = conlist(
-                        element_type, max_length=field_schema.max_capacity
-                    )
-                else:
-                    field_type = List[element_type]
+        if field_schema.dtype == DataType.BINARY_VECTOR:
+            return conlist(
+                int,
+                min_length=field_schema.dim / 8,
+                max_length=field_schema.dim / 8,
+            )
+        elif field_schema.dtype in [DataType.FLOAT16_VECTOR, DataType.BFLOAT16_VECTOR]:
+            return conlist(
+                float,
+                min_length=field_schema.dim * 2,
+                max_length=field_schema.dim * 2,
+            )
+        else:  # FLOAT_VECTOR
+            return conlist(
+                float,
+                min_length=field_schema.dim,
+                max_length=field_schema.dim,
+            )
 
-                if (
-                    field_schema.element_type == DataType.VARCHAR
-                    and field_schema.max_length
-                ):
-                    field_type = conlist(
-                        constr(max_length=field_schema.max_length),
-                        max_length=field_schema.max_capacity,
-                    )
+    def _create_array_field_type(self, field_schema: FieldSchema):
+        """Create field type for array data types."""
+        element_type = self._get_base_type(field_schema.element_type)
 
-            elif field_schema.dtype in [DataType.FLOAT_VECTOR, DataType.BINARY_VECTOR]:
-                if field_schema.dim:
-                    field_type = conlist(
-                        float if field_schema.dtype == DataType.FLOAT_VECTOR else int,
-                        min_length=field_schema.dim,
-                        max_length=field_schema.dim,
-                    )
+        if field_schema.max_capacity:
+            if field_schema.element_type == DataType.VARCHAR and field_schema.max_length:
+                return conlist(
+                    constr(max_length=field_schema.max_length),
+                    max_length=field_schema.max_capacity,
+                )
+            return conlist(element_type, max_length=field_schema.max_capacity)
 
-            elif field_schema.dtype in [DataType.BINARY_VECTOR]:
-                if field_schema.dim:
-                    field_type = conlist(
-                        float if field_schema.dtype == DataType.FLOAT_VECTOR else int,
-                        min_length=field_schema.dim / 8,
-                        max_length=field_schema.dim / 8,
-                    )
+        return List[element_type]
 
-            elif field_schema.dtype in [
-                DataType.FLOAT16_VECTOR,
-                DataType.BFLOAT16_VECTOR,
-            ]:
-                if field_schema.dim:
-                    field_type = conlist(
-                        float if field_schema.dtype == DataType.FLOAT_VECTOR else int,
-                        min_length=field_schema.dim * 2,
-                        max_length=field_schema.dim * 2,
-                    )
-            elif field_schema.dtype in [DataType.SPARSE_FLOAT_VECTOR]:
-                field_type = Union[Dict[int, float], SparseVectorCOO]
+    def _create_field_model(self, field_schema: FieldSchema):
+        """Create a field model based on the schema."""
+        field_type = self._get_base_type(field_schema.dtype)
+        field_kwargs = {}
 
-            return field_type, Field(..., **field_kwargs)
+        if field_schema.dtype == DataType.VARCHAR and field_schema.max_length:
+            field_type = constr(max_length=field_schema.max_length)
+        elif field_schema.dtype == DataType.ARRAY:
+            field_type = self._create_array_field_type(field_schema)
+        elif field_schema.dtype in [
+            DataType.FLOAT_VECTOR,
+            DataType.BINARY_VECTOR,
+            DataType.FLOAT16_VECTOR,
+            DataType.BFLOAT16_VECTOR,
+        ]:
+            field_type = self._create_vector_field_type(field_schema)
+        elif field_schema.dtype == DataType.SPARSE_FLOAT_VECTOR:
+            sparse_vector_model = self._create_sparse_vector_model()
+            field_type = Union[Dict[int, float], sparse_vector_model]
+
+        return field_type, Field(..., **field_kwargs)
+
+    def create_schema_model(self):
+        """Create a Pydantic model to validate the dataset's schema."""
 
         def create_array_validator(element_type: DataType):
-            base_type = get_base_type(element_type)
+            base_type = self._get_base_type(element_type)
 
             def validate_array(cls, v):
                 for item in v:
@@ -296,13 +299,13 @@ class Dataset:
         fields = {}
         validators = {}
         for schema in self._schema.fields:
-            fields[schema.name] = create_field_model(schema)
+            fields[schema.name], _ = self._create_field_model(schema)
             if schema.dtype == DataType.ARRAY:
                 validators[f"validate_{schema.name}"] = field_validator(schema.name)(
                     create_array_validator(schema.element_type)
                 )
 
-        RowModel = create_model(
+        RowModel = create_model(  # noqa: N806
             "DynamicSchemaModel", **fields, __validators__=validators
         )
 
@@ -310,7 +313,7 @@ class Dataset:
             data: List[RowModel]
 
             @model_validator(mode="before")
-            def validate_dataframe(cls, values):
+            def validate_dataframe(self, values):
                 data = values.get("data")
                 if isinstance(data, pd.DataFrame):
                     values["data"] = data.to_dict("records")
@@ -323,11 +326,11 @@ class Dataset:
 
     def _verify_schema(self, data: Union[pd.DataFrame, Dict, List[Dict]]):
         # if column is auto id, remove it from schema
-        # column 不能多，也不能少, 如果是dynamic field,那么可以不验证。
 
         if isinstance(data, dict) or (isinstance(data, list)):
             data = pd.DataFrame(data)
-        DataFrameModel, RowModel = self.create_schema_model()
+        DataFrameModel, RowModel = self.create_schema_model()  # noqa: N806
+
         try:
             t0 = time.time()
             rows = data.to_dict("records")
@@ -339,7 +342,7 @@ class Dataset:
             )
 
         except ValidationError as e:
-            raise ValueError(f"Data does not conform to schema: {e}")
+            raise ValueError(f"Data does not conform to schema: {e}") from e
 
     def _get_summary(self) -> Dict[str, Union[str, int, Dict]]:
         if self._summary is None:
@@ -368,9 +371,7 @@ class Dataset:
                         total_rows += parquet_file.metadata.num_rows
                         if not schema_dict:
                             schema = parquet_file.schema.to_arrow_schema()
-                            schema_dict = {
-                                field.name: str(field.type) for field in schema
-                            }
+                            schema_dict = {field.name: str(field.type) for field in schema}
                         total_size += self.fs.info(file)["size"]
 
                 self._summary = {
@@ -440,9 +441,7 @@ class Dataset:
         logger.info(f"Preparing to write data to dataset '{self.name}'")
         if mode == "overwrite":
             files = self.fs.glob(f"{self.root_path}/{self.name}/{self.split}/*.parquet")
-            logger.info(
-                f"Deleting existing dataset '{self.name}' split '{self.split}': {files}"
-            )
+            logger.info(f"Deleting existing dataset '{self.name}' split '{self.split}': {files}")
             if self.fs.exists(f"{self.root_path}/{self.name}/{self.split}"):
                 self.fs.rm(f"{self.root_path}/{self.name}/{self.split}", recursive=True)
             self._ensure_split_exists()
@@ -607,9 +606,7 @@ class DatasetDict(dict):
                     # Decide how to handle metadata/schema file copy failures
                     # You might want to raise an exception here as these are crucial files
 
-        logger.info(
-            f"Dataset '{self.name}' has been successfully saved to {destination.root_path}"
-        )
+        logger.info(f"Dataset '{self.name}' has been successfully saved to {destination.root_path}")
 
     def save_to_local(self, destination: StorageConfig):
         """
@@ -680,9 +677,7 @@ class DatasetDict(dict):
                     # Decide how to handle metadata/schema file copy failures
                     # You might want to raise an exception here as these are crucial files
 
-        logger.info(
-            f"Dataset '{self.name}' has been successfully saved to {destination.root_path}"
-        )
+        logger.info(f"Dataset '{self.name}' has been successfully saved to {destination.root_path}")
 
     def to_readme(self):
         # Create a readme file
@@ -708,8 +703,20 @@ dataset: {self.name}
 
 """
 
-        headers = ["Split", "Name", "Size", "Num Rows", "Num Columns", "Schema", "Storage Type", "Num Files"]
-        table = ["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
+        headers = [
+            "Split",
+            "Name",
+            "Size",
+            "Num Rows",
+            "Num Columns",
+            "Schema",
+            "Storage Type",
+            "Num Files",
+        ]
+        table = [
+            "| " + " | ".join(headers) + " |",
+            "| " + " | ".join(["---"] * len(headers)) + " |",
+        ]
         logger.info(f"summary: {self._summary}")
         for split, details in self._summary.items():
             row = [
@@ -720,9 +727,9 @@ dataset: {self.name}
                 str(details.get("num_columns", "")),
                 json.dumps(details.get("schema", {}), indent=2).replace("\n", "<br>"),
                 str(details.get("storage_type", "")),
-                str(details.get("num_files", ""))
+                str(details.get("num_files", "")),
             ]
-            
+
             logger.info(row)
             table.append("| " + " | ".join(row) + " |")
         file_path = f"{self.storage.root_path}/{self.name}/README.md"
@@ -824,9 +831,7 @@ dataset: {self.name}
             # List all files in train split
             # Create fs by Milvus storage
             milvus_fs = _create_filesystem(milvus_storage)
-            train_files = milvus_fs.glob(
-                f"{milvus_storage.root_path}/{self.name}/train/*.parquet"
-            )
+            train_files = milvus_fs.glob(f"{milvus_storage.root_path}/{self.name}/train/*.parquet")
             # Restful API to import data
             task_ids = []
             for file in train_files:
@@ -853,9 +858,7 @@ dataset: {self.name}
                         )
                         task_ids.remove(id)
                     elif state.state == BulkInsertState.ImportCompleted:
-                        logger.info(
-                            f"The task {state.task_id} completed with state {state}"
-                        )
+                        logger.info(f"The task {state.task_id} completed with state {state}")
                         task_ids.remove(id)
         else:
             raise ValueError("mode must be 'insert' or 'import'")
@@ -866,9 +869,9 @@ dataset: {self.name}
         logger.info(f"collection num entities {c.num_entities}")
 
     def to_hf(
-            self,
-            repo_name: str = None,
-            token: str = None,
+        self,
+        repo_name: str | None = None,
+        token: str | None = None,
     ):
         """
         Upload a dataset to the Hugging Face Hub
@@ -894,7 +897,9 @@ dataset: {self.name}
         if token is None:
             token = os.environ.get("HF_TOKEN")
             if token is None:
-                raise ValueError("Please provide a Hugging Face token or set the HF_TOKEN environment variable")
+                raise ValueError(
+                    "Please provide a Hugging Face token or set the HF_TOKEN environment variable"
+                )
 
         if repo_name is None:
             raise ValueError("Please provide a repository name (format: 'username/dataset-name')")
@@ -907,27 +912,21 @@ dataset: {self.name}
 
             # Create or get repository
             repo_url = api.create_repo(
-                repo_id=repo_name,
-                repo_type="dataset",
-                token=token,
-                exist_ok=True
+                repo_id=repo_name, repo_type="dataset", token=token, exist_ok=True
             )
 
             print(f"Uploading data to repository: {repo_name}")
 
             # Upload files
             api.upload_folder(
-                folder_path=str(local_path),
-                repo_id=repo_name,
-                repo_type="dataset",
-                token=token
+                folder_path=str(local_path), repo_id=repo_name, repo_type="dataset", token=token
             )
 
             print(f"Upload successful! Repository URL: {repo_url}")
             return repo_url
 
         except Exception as e:
-            print(f"Error occurred during upload: {str(e)}")
+            print(f"Error occurred during upload: {e!s}")
             raise
 
 

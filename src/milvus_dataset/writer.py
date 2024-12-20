@@ -69,13 +69,17 @@ class DatasetWriter:
                 break
             buffer_df = item
             try:
-                logger.debug(f"Processing buffer: size={len(buffer_df)}, queue_size={self.write_queue.qsize()}")
-                
+                logger.debug(
+                    f"Processing buffer: size={len(buffer_df)}, queue_size={self.write_queue.qsize()}"
+                )
+
                 if not isinstance(buffer_df, pd.DataFrame):
-                    logger.error(f"Invalid buffer type: expected=DataFrame, actual={type(buffer_df)}")
+                    logger.error(
+                        f"Invalid buffer type: expected=DataFrame, actual={type(buffer_df)}"
+                    )
                     raise ValueError(f"Invalid buffer type: {type(buffer_df)}")
             except Exception as e:
-                logger.exception(f"Error processing buffer: {error}")
+                logger.exception(f"Error processing buffer: {e}")
             self._write_buffer(buffer_df)
             self.write_queue.task_done()
             time.sleep(0.1)
@@ -96,9 +100,7 @@ class DatasetWriter:
         elif isinstance(data, list):
             self._write_list(data)
         else:
-            raise ValueError(
-                "Unsupported data type. Expected DataFrame, Dict, or List[Dict]."
-            )
+            raise ValueError("Unsupported data type. Expected DataFrame, Dict, or List[Dict].")
         # self.dataset.summary()
 
     def _write_dataframe(self, df: pd.DataFrame):
@@ -109,12 +111,10 @@ class DatasetWriter:
         df_chunks = [df[batch : batch + batch_size] for batch in range(0, len(df), batch_size)]
         for i, df_batch in enumerate(df_chunks):
             logger.debug(f"Processing batch {i+1}/{len(df_chunks)}: size={len(df_batch)}")
-            
+
             with self.buffer_locks[self.current_buffer]:
                 # logger.info(f"Adding {len(df_batch)} row to buffer {self.current_buffer}")
-                self.buffers[self.current_buffer].extend(
-                    df_batch.to_dict(orient="records")
-                )
+                self.buffers[self.current_buffer].extend(df_batch.to_dict(orient="records"))
                 # logger.info(f"buffer {len(self.buffers[self.current_buffer])} rows")
                 if len(self.buffers[self.current_buffer]) >= self.rows_per_file:
                     logger.info(
@@ -129,11 +129,11 @@ class DatasetWriter:
                             self.write_queue.put(df)
                     except Exception as e:
                         if self.write_queue.full():
-                            logger.warning(
-                                "Write queue is full. Waiting for space..."
-                            )
+                            logger.warning("Write queue is full. Waiting for space...")
                         logger.warning(f"Write queue is failed with error {e}")
-                    logger.debug(f"Queue status after write: size={len(self.buffers[self.current_buffer])}")
+                    logger.debug(
+                        f"Queue status after write: size={len(self.buffers[self.current_buffer])}"
+                    )
                     self.buffers[self.current_buffer] = []
                     self.current_buffer = (self.current_buffer + 1) % self.num_buffers
 
@@ -160,7 +160,9 @@ class DatasetWriter:
         rounded_rows_per_file = round(estimated_rows_per_file / 10000) * 10000
         final_rows_per_file = max(10000, rounded_rows_per_file)
 
-        logger.info(f"Calculated file parameters: estimated_rows={estimated_rows_per_file}, final_rows={final_rows_per_file}")
+        logger.info(
+            f"Calculated file parameters: estimated_rows={estimated_rows_per_file}, final_rows={final_rows_per_file}"
+        )
         return final_rows_per_file
 
     def _write_buffer(self, buffer_df: pd.DataFrame):

@@ -36,13 +36,9 @@ def _create_filesystem(storage_config: StorageConfig) -> AbstractFileSystem:
             except Exception:
                 try:
                     fs.mkdir(bucket)
-                    logger.info(
-                        f"Successfully created and connected to new bucket: {bucket}"
-                    )
+                    logger.info(f"Successfully created and connected to new bucket: {bucket}")
                 except Exception as create_error:
-                    logger.error(
-                        f"Failed to create bucket {bucket}: {create_error!s}"
-                    )
+                    logger.error(f"Failed to create bucket {bucket}: {create_error!s}")
                     raise
             return fs
         except Exception as e:
@@ -59,7 +55,7 @@ def copy_between_filesystems(
     dest_fs: AbstractFileSystem,
     source_path: str,
     dest_path: str,
-    ignore_patterns: List[str] = None,
+    ignore_patterns: List[str] | None = None,
 ) -> List[Tuple[str, str, str]]:
     """
     Copy files and directories from one filesystem to another.
@@ -116,11 +112,9 @@ def copy_data(
     dest_config: StorageConfig,
     source_path: str,
     dest_path: str,
-    ignore_patterns: List[str] = None,
+    ignore_patterns: List[str] | None = None,
 ) -> List[Tuple[str, str, str]]:
     source_fs = _create_filesystem(source_config)
     dest_fs = _create_filesystem(dest_config)
 
-    return copy_between_filesystems(
-        source_fs, dest_fs, source_path, dest_path, ignore_patterns
-    )
+    return copy_between_filesystems(source_fs, dest_fs, source_path, dest_path, ignore_patterns)

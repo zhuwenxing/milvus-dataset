@@ -1,5 +1,5 @@
 from typing import Any, Generator, Optional
-import os
+
 import pandas as pd
 import pyarrow.parquet as pq
 
@@ -26,7 +26,7 @@ class DatasetReader:
                 contents = self.dataset.fs.ls(path)
                 logger.debug(f"Directory contents: path={path}, files={contents}")
             except Exception as e:
-                logger.warning(f"Failed to list directory contents: path={path}, error={str(e)}")
+                logger.warning(f"Failed to list directory contents: path={path}, error={e!s}")
 
             if mode == "full":
                 return self._read_full(path)
@@ -34,17 +34,13 @@ class DatasetReader:
                 return self._read_stream(path, 1)
             elif mode == "batch":
                 if batch_size is None:
-                    raise ValueError(
-                        "Batch size must be provided when using 'batch' read mode."
-                    )
+                    raise ValueError("Batch size must be provided when using 'batch' read mode.")
                 return self._read_stream(path, batch_size)
             else:
-                raise ValueError(
-                    "Invalid read mode. Expected 'stream', 'batch', or 'full'."
-                )
+                raise ValueError("Invalid read mode. Expected 'stream', 'batch', or 'full'.")
 
         except Exception as e:
-            logger.exception(f"Unexpected error reading dataset: path={path}, error={str(e)}")
+            logger.exception(f"Unexpected error reading dataset: path={path}, error={e!s}")
             raise
 
     def _read_full(self, path):

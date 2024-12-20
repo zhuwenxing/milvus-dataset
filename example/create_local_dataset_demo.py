@@ -7,7 +7,7 @@ from pymilvus import CollectionSchema, DataType, FieldSchema
 
 from milvus_dataset import ConfigManager, StorageType, load_dataset
 
-logger.info(f"start to create dataset")
+logger.info("start to create dataset")
 config_manager = ConfigManager()
 # config_manager.init_storage("./data/cohere-v3-1M")
 
@@ -20,17 +20,15 @@ config_manager = ConfigManager()
 
 # MinIO配置
 options = {
-    "key": "tcsEVaS6jEWNYjrl",          # MinIO访问密钥
-    "secret": "1kAAG5IvnsvUehOTPCxvprKmXMBirrXJ",       # MinIO密钥
+    "key": "tcsEVaS6jEWNYjrl",  # MinIO访问密钥
+    "secret": "1kAAG5IvnsvUehOTPCxvprKmXMBirrXJ",  # MinIO密钥
     "endpoint_url": "http://10.100.36.175:9000",  # MinIO服务器地址
-    "use_ssl": False  # 如果使用HTTPS则设为True    
+    "use_ssl": False,  # 如果使用HTTPS则设为True
 }
 
 ConfigManager().init_storage(
-    root_path="s3://milvus-dataset/benchmark-dataset",
-    storage_type=StorageType.S3,
-    **options
-    )
+    root_path="s3://milvus-dataset/benchmark-dataset", storage_type=StorageType.S3, **options
+)
 
 
 id_field = FieldSchema("idx", DataType.INT64, is_primary=True)
@@ -45,28 +43,27 @@ schema = CollectionSchema(
 )
 
 logger.info(f"schema: {schema}")
-logger.info(f"start to load dataset")
+logger.info("start to load dataset")
 dataset = load_dataset("cohere-v3-small", schema=schema)
-logger.info(f"succeed to load dataset")
+logger.info("succeed to load dataset")
 print(dataset)
 train_dataset = dataset["train"]
 test_dataset = dataset["test"]
 
-file_list = glob.glob(
-    "./sample_data/*.parquet"
-)
+file_list = glob.glob("./sample_data/*.parquet")
 logger.info(f"file length {len(file_list)}")
 
 df = pd.read_parquet(file_list[0])
 logger.info(f"row num each file {len(df)}\n {df}")
 
 train_size = 1000_000
-test_size=100
-# 每个文件110000行，从中选取100000行
+test_size = 100
 train_batch_size = 1000
 epoch = 1
-test_batch_size = test_size//epoch
-logger.info(f"train_size: {train_size}, test_size: {test_size}, train_batch_size: {train_batch_size}, test_batch_size: {test_batch_size}")
+test_batch_size = test_size // epoch
+logger.info(
+    f"train_size: {train_size}, test_size: {test_size}, train_batch_size: {train_batch_size}, test_batch_size: {test_batch_size}"
+)
 
 test_data_list = []
 
@@ -85,11 +82,8 @@ with train_dataset.get_writer(
         train_idx_list = list(range(e * train_batch_size, (e + 1) * train_batch_size))
         test_idx_list = list(range(e * test_batch_size, (e + 1) * test_batch_size))  #
 
-        # 创建新的DataFrame，而不是使用切片
         train_data = df_shuffled.iloc[:train_batch_size].copy()
-        test_data = df_shuffled.iloc[
-            train_batch_size: train_batch_size + test_batch_size
-        ].copy()
+        test_data = df_shuffled.iloc[train_batch_size : train_batch_size + test_batch_size].copy()
 
         logger.info(
             f"train data shape: {train_data.shape}, train_idx_list length: {len(train_idx_list)}"
@@ -121,4 +115,3 @@ dataset.compute_neighbors(
 )
 res = dataset.summary()
 logger.info(f"summary: {res}")
-
