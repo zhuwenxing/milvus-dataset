@@ -8,27 +8,14 @@ from pymilvus import CollectionSchema, DataType, FieldSchema
 from milvus_dataset import ConfigManager, StorageType, load_dataset
 
 logger.info("start to create dataset")
-config_manager = ConfigManager()
-# config_manager.init_storage("./data/cohere-v3-1M")
 
-
-# ConfigManager().init_storage(
-#     root_path="./data/cohere-dataset",
-#     storage_type=StorageType.LOCAL,
-# )
-
-
-# MinIO配置
-options = {
-    "key": "tcsEVaS6jEWNYjrl",  # MinIO访问密钥
-    "secret": "1kAAG5IvnsvUehOTPCxvprKmXMBirrXJ",  # MinIO密钥
-    "endpoint_url": "http://10.100.36.175:9000",  # MinIO服务器地址
-    "use_ssl": False,  # 如果使用HTTPS则设为True
-}
 
 ConfigManager().init_storage(
-    root_path="s3://milvus-dataset/benchmark-dataset", storage_type=StorageType.S3, **options
+    root_path="./data/cohere-dataset",
+    storage_type=StorageType.LOCAL,
 )
+
+
 
 
 id_field = FieldSchema("idx", DataType.INT64, is_primary=True)

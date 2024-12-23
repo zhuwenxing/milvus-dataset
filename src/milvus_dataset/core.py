@@ -1,7 +1,9 @@
 import json
+from math import log
 import os
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Union
@@ -36,7 +38,7 @@ from pymilvus import (
 from .log_config import logger
 from .neighbors import NeighborsComputation
 from .reader import DatasetReader
-from .storage import StorageConfig, StorageType, _create_filesystem
+from .storage import StorageConfig, StorageType, _create_filesystem, copy_data
 from .writer import DatasetWriter
 
 
@@ -355,7 +357,6 @@ class Dataset:
                     "num_rows": 0,
                     "num_columns": 0,
                     "schema": {},
-                    "storage_type": self.config.storage.type.value,
                     "num_files": 0,
                 }
             else:
@@ -381,7 +382,6 @@ class Dataset:
                     "num_rows": total_rows,
                     "num_columns": len(schema_dict),
                     "schema": schema_dict,
-                    "storage_type": self.config.storage.type.value,
                     "num_files": num_files,
                 }
 
@@ -466,15 +466,12 @@ class Dataset:
         mode: str = "append",
         verify_schema: bool = True,
     ):
-        self._prepare_for_write(mode)
+        """Write data to the dataset"""
+        # Get the writer with the specified mode
+        writer = self.get_writer(mode=mode)
+        result = writer.write(data, verify_schema=verify_schema)
 
-        if verify_schema and self.split == "train":
-            self._verify_schema(data)
-
-        with self.get_writer(mode=mode, verify_schema=False) as writer:
-            result = writer.write(data)
-
-        self._summary = None
+        self._summary = None       
         return result
 
     def read(self, mode: str = "stream", batch_size: int = 1000):
@@ -493,7 +490,6 @@ class Dataset:
                 "num_rows": 0,
                 "num_columns": 0,
                 "schema": {},
-                "storage_type": self.config.storage.type.value,
                 "num_files": 0,
             }
 
@@ -523,9 +519,48 @@ class Dataset:
             "num_rows": total_rows,
             "num_columns": len(schema_dict),
             "schema": schema_dict,
-            "storage_type": self.config.storage.type.value,
             "num_files": num_files,
         }
+
+
+class DatasetMetadata(BaseModel):
+    name: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    train: Optional[int] = None
+    test: Optional[int] = None
+    source: Optional[str] = None
+    task: Optional[str] = None
+    dense_model: Optional[Dict[str, Any]] = None
+    sparse_model: Optional[Dict[str, Any]] = None
+    license: str = (
+        "DISCLAIMER AND LICENSE NOTICE:\n"
+        "1. This dataset is intended for benchmarking and research purposes only.\n"
+        "2. The source data used in this dataset retains its original license and copyright. "
+        "Users must comply with the respective licenses of the original data sources.\n"
+        "3. The ground truth part of the dataset (including but not limited to annotations, "
+        "labels, and evaluation metrics) is licensed under Apache 2.0.\n"
+        "4. This dataset is provided 'AS IS' without any warranty. The dataset maintainers "
+        "are not responsible for any copyright violations arising from the use of the source data.\n"
+        "5. If you are the copyright holder of any source data and believe it has been included "
+        "inappropriately, please contact us for prompt removal.\n"
+        "6. Commercial use of this dataset must ensure compliance with the original data sources' "
+        "licenses and obtain necessary permissions where required."
+    )
+
+    @classmethod
+    def from_dataset_dict(cls, dataset_dict: 'DatasetDict'):
+        """Create metadata from a DatasetDict instance"""
+        metadata = cls(
+            name=dataset_dict.name,
+            train=dataset_dict.datasets["train"].get_num_rows()
+            if "train" in dataset_dict.datasets
+            else None,
+            test=dataset_dict.datasets["test"].get_num_rows()
+            if "test" in dataset_dict.datasets
+            else None,
+        )
+        return metadata
 
 
 class DatasetDict(dict):
@@ -536,148 +571,134 @@ class DatasetDict(dict):
         self.train = datasets["train"]
         self.storage = datasets["train"].config.storage
         self._summary = {}
+        self._metadata = {}
+        self.meta = None
+        self._load_metadata()
 
     def __getitem__(self, key: str) -> Dataset:
         return super().__getitem__(key)
 
-    def save_to_s3(self, destination: StorageConfig):
+    def save(self, destination: StorageConfig):
         """
-        Save the dataset by copying all files to a specified S3/MinIO destination using s3fs.
+        Save the dataset by copying all files to a specified destination using the storage utilities.
+        The destination can be any supported storage type (local, S3, GCS).
 
         Args:
             destination (StorageConfig): The storage configuration for the destination where the dataset should be saved.
         """
-        # Assume destination is S3/MinIO
-        s3 = s3fs.S3FileSystem(**destination.options)
-
-        def copy_file(src_file, dest_path):
-            file_name = os.path.basename(src_file)
-            dest_file = f"{dest_path}/{file_name}"
-            try:
-                logger.info(f"Starting to copy {src_file} to {dest_file}")
-
-                # For S3 to S3 transfer
-                if isinstance(self.datasets["train"].fs, s3fs.S3FileSystem):
-                    s3.copy(src_file, dest_file)
-                    logger.info(
-                        f"Successfully copied {file_name} to {dest_path} using S3 to S3 transfer"
-                    )
-                else:
-                    # For local to S3 transfer
-                    with tempfile.NamedTemporaryFile() as temp_file:
-                        self.datasets["train"].fs.get(src_file, temp_file.name)
-                        s3.put(temp_file.name, dest_file)
-                    logger.info(
-                        f"Successfully copied {file_name} to {dest_path} using local to S3 transfer"
-                    )
-            except Exception as e:
-                logger.error(f"Error copying {file_name}: {e!s}")
-                raise
-
+        from .storage import copy_data
+        
+        # Copy dataset splits
         for split, dataset in self.datasets.items():
             source_path = f"{dataset.root_path}/{dataset.name}/{split}"
             dest_path = f"{destination.root_path}/{dataset.name}/{split}"
+            
+            try:
+                logger.info(f"Copying split {split} from {source_path} to {dest_path}")
+                results = copy_data(
+                    source_config=dataset.storage,
+                    dest_config=destination,
+                    source_path=source_path,
+                    dest_path=dest_path
+                )
+                
+                # Log copy results
+                for src, dst, status in results:
+                    if status == "Success":
+                        logger.debug(f"Successfully copied {src} to {dst}")
+                    else:
+                        logger.warning(f"Issue copying {src} to {dst}: {status}")
+                
+            except Exception as e:
+                logger.error(f"Failed to copy split {split}: {e!s}")
+                continue
 
-            # Ensure the destination directory exists
-            s3.makedirs(dest_path, exist_ok=True)
-
-            # Copy all files from source to destination
-            for file in dataset.fs.glob(f"{source_path}/*.parquet"):
-                try:
-                    copy_file(file, dest_path)
-                except Exception as e:
-                    logger.error(f"Failed to copy {file}: {e!s}")
-                    # Optionally, you might want to break the loop or continue
-                    # depending on how you want to handle file copy failures
-                    # break  # Uncomment this if you want to stop on first error
-                    continue  # Skip to the next file on error
-
-        # Copy metadata and schema files
-        metadata_file = f"{self.datasets['train'].root_path}/{self.name}/metadata.json"
-        schema_file = f"{self.datasets['train'].root_path}/{self.name}/schema.json"
-
-        for file in [metadata_file, schema_file]:
-            if self.datasets["train"].fs.exists(file):
-                dest_path = f"{destination.root_path}/{self.name}"
-                try:
-                    copy_file(file, dest_path)
-                except Exception as e:
-                    logger.error(f"Failed to copy {file}: {e!s}")
-                    # Decide how to handle metadata/schema file copy failures
-                    # You might want to raise an exception here as these are crucial files
+        # Copy dataset metadata directory
+        try:
+            metadata_path = f"{self.datasets['train'].root_path}/{self.name}"
+            dest_metadata_path = f"{destination.root_path}/{self.name}"
+            
+            logger.info(f"Copying metadata from {metadata_path} to {dest_metadata_path}")
+            results = copy_data(
+                source_config=self.datasets['train'].storage,
+                dest_config=destination,
+                source_path=metadata_path,
+                dest_path=dest_metadata_path
+            )
+            
+            # Log metadata copy results
+            for src, dst, status in results:
+                if status == "Success":
+                    logger.debug(f"Successfully copied {src} to {dst}")
+                else:
+                    logger.warning(f"Issue copying {src} to {dst}: {status}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to copy metadata directory: {e!s}")
+            raise
 
         logger.info(f"Dataset '{self.name}' has been successfully saved to {destination.root_path}")
 
-    def save_to_local(self, destination: StorageConfig):
-        """
-        Save the dataset by copying all files to a specified S3/MinIO destination using s3fs.
+    def get_metadata(self):
+        self._load_metadata()
+        return self.meta
 
+
+    def set_metadata(self, metadata: Union[DatasetMetadata, Dict[str, Any]]):
+        """Set metadata for the dataset and save it to metadata.json
+        
         Args:
-            destination (StorageConfig): The storage configuration for the destination where the dataset should be saved.
+            metadata: Either a DatasetMetadata object or a dictionary containing metadata fields to update
         """
-        # Assume destination is S3/MinIO
-        s3 = s3fs.S3FileSystem(**destination.options)
+        if isinstance(metadata, dict):
+            # If current metadata doesn't exist, create a new one
+            if self.meta is None:
+                current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S%z")
+                self.meta = DatasetMetadata(
+                    created_at=current_time,
+                    updated_at=current_time
+                )
+            
+            # Update only the provided fields
+            for key, value in metadata.items():
+                if hasattr(self.meta, key) and key not in ['created_at', 'updated_at']:
+                    setattr(self.meta, key, value)
+        else:
+            # Preserve existing timestamps if they exist
+            if self.meta:
+                metadata.created_at = self.meta.created_at
+                metadata.updated_at = self.meta.updated_at
+            self.meta = metadata
+        logger.info(f"Updated metadata: {self.meta}")
+            
+        self._save_metadata()    
 
-        # TODO: should use recursive copy
+    def _load_metadata(self):
+        """Load metadata from metadata.json if it exists"""
+        try:
+            file_path = f"{self.storage.root_path}/{self.name}/metadata.json"
+            with self.datasets["train"].fs.open(file_path, "r") as f:
+                metadata_dict = json.load(f)
+                self.meta = DatasetMetadata(**metadata_dict)
+        except:
+            # Only initialize timestamps when metadata.json doesn't exist
+            current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S%z")
+            self.meta = DatasetMetadata.from_dataset_dict(self)
+            self.meta.created_at = current_time
+            self.meta.updated_at = current_time
+            self._save_metadata()
 
-        def copy_file(src_file, dest_path):
-            file_name = os.path.basename(src_file)
-            dest_file = f"{dest_path}/{file_name}"
-            try:
-                logger.info(f"Starting to copy {src_file} to {dest_file}")
-
-                # For S3 to local transfer
-                if isinstance(self.datasets["train"].fs, s3fs.S3FileSystem):
-                    s3.copy(src_file, dest_file)
-                    logger.info(
-                        f"Successfully copied {file_name} to {dest_path} using S3 to S3 transfer"
-                    )
-                else:
-                    # For local to local transfer
-                    with tempfile.NamedTemporaryFile() as temp_file:
-                        self.datasets["train"].fs.get(src_file, temp_file.name)
-                        s3.put(temp_file.name, dest_file)
-                    logger.info(
-                        f"Successfully copied {file_name} to {dest_path} using local to S3 transfer"
-                    )
-            except Exception as e:
-                logger.error(f"Error copying {file_name}: {e!s}")
-                raise
-
-        for split, dataset in self.datasets.items():
-            source_path = f"{dataset.root_path}/{dataset.name}/{split}"
-            dest_path = f"{destination.root_path}/{dataset.name}/{split}"
-
-            # Ensure the destination directory exists
-            s3.makedirs(dest_path, exist_ok=True)
-
-            # Copy all files from source to destination
-            for file in dataset.fs.glob(f"{source_path}/*.parquet"):
-                try:
-                    copy_file(file, dest_path)
-                except Exception as e:
-                    logger.error(f"Failed to copy {file}: {e!s}")
-                    # Optionally, you might want to break the loop or continue
-                    # depending on how you want to handle file copy failures
-                    # break  # Uncomment this if you want to stop on first error
-                    continue  # Skip to the next file on error
-
-        # Copy metadata and schema files
-        metadata_file = f"{self.datasets['train'].root_path}/{self.name}/metadata.json"
-        schema_file = f"{self.datasets['train'].root_path}/{self.name}/schema.json"
-        # Copy readme file
-
-        for file in [metadata_file, schema_file]:
-            if self.datasets["train"].fs.exists(file):
-                dest_path = f"{destination.root_path}/{self.name}"
-                try:
-                    copy_file(file, dest_path)
-                except Exception as e:
-                    logger.error(f"Failed to copy {file}: {e!s}")
-                    # Decide how to handle metadata/schema file copy failures
-                    # You might want to raise an exception here as these are crucial files
-
-        logger.info(f"Dataset '{self.name}' has been successfully saved to {destination.root_path}")
+    def _save_metadata(self):
+        """Save metadata to metadata.json"""
+        if self.meta is None:
+            return
+        
+        metadata_file = f"{self.storage.root_path}/{self.name}/metadata.json"
+        try:
+            with self.datasets["train"].fs.open(metadata_file, "w") as f:
+                json.dump(self.meta.model_dump(), f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving metadata: {e}")
 
     def to_readme(self):
         # Create a readme file
@@ -701,7 +722,27 @@ configs:
 
 dataset: {self.name}
 
+## Metadata
+
 """
+        metadata = self.get_metadata()
+        if metadata:
+            readme += f"""
+- **Creation Time**: {metadata.created_at if metadata.created_at else 'N/A'}
+- **Update Time**: {metadata.updated_at if metadata.updated_at else 'N/A'}
+- **Source**: {metadata.source if metadata.source else 'N/A'}
+- **Task**: {metadata.task if metadata.task else 'N/A'}
+- **Train Samples**: {metadata.train if metadata.train else 'N/A'}
+- **Test Samples**: {metadata.test if metadata.test else 'N/A'}
+"""
+            if metadata.dense_model:
+                readme += f"- **Dense Model**: {json.dumps(metadata.dense_model, indent=2)}\n"
+            if metadata.sparse_model:
+                readme += f"- **Sparse Model**: {json.dumps(metadata.sparse_model, indent=2)}\n"
+            if metadata.license:
+                readme += f"- **License**: {metadata.license}\n"
+
+        readme += "\n## Dataset Statistics\n\n"
 
         headers = [
             "Split",
@@ -710,7 +751,6 @@ dataset: {self.name}
             "Num Rows",
             "Num Columns",
             "Schema",
-            "Storage Type",
             "Num Files",
         ]
         table = [
@@ -726,7 +766,6 @@ dataset: {self.name}
                 str(details.get("num_rows", "")),
                 str(details.get("num_columns", "")),
                 json.dumps(details.get("schema", {}), indent=2).replace("\n", "<br>"),
-                str(details.get("storage_type", "")),
                 str(details.get("num_files", "")),
             ]
 
@@ -745,9 +784,9 @@ dataset: {self.name}
         """
         res = {split: dataset.summary() for split, dataset in self.datasets.items()}
         # save to json file
-        file_path = f"{self.storage.root_path}/{self.name}/{self.name}_summary.json"
+        file_path = f"{self.storage.root_path}/{self.name}/summary.json"
         with self.datasets["train"].fs.open(file_path, "w") as f:
-            json.dump(res, f)
+            json.dump(res, f, indent=2)
         self._summary = res
         self.to_readme()
         return res
@@ -827,7 +866,7 @@ dataset: {self.name}
         elif mode == "import":
             # Use save to method to save the dataset to Milvus storage
             # Sync data to Milvus storage
-            self.save_to_s3(milvus_storage)
+            self.save(milvus_storage)
             # List all files in train split
             # Create fs by Milvus storage
             milvus_fs = _create_filesystem(milvus_storage)
@@ -886,13 +925,13 @@ dataset: {self.name}
         local_path = f"{self.storage.root_path}/{self.name}"
         if self.storage.type != StorageType.LOCAL:
             logger.info("Downloading dataset to local storage")
-            self.save_to_local(StorageConfig(type=StorageType.LOCAL, root_path=local_path))
+            self.save(StorageConfig(type=StorageType.LOCAL, root_path=local_path))
         api = HfApi()
 
         # if storage is s3, download to local
         if self.storage.type in [StorageType.S3, StorageType.GCS]:
             local_path = tempfile.mkdtemp()
-            self.save_to_local(StorageConfig(type=StorageType.LOCAL, root_path=local_path))
+            self.save(StorageConfig(type=StorageType.LOCAL, root_path=local_path))
 
         if token is None:
             token = os.environ.get("HF_TOKEN")

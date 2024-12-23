@@ -1,3 +1,4 @@
+from math import log
 import os
 import tempfile
 import threading
@@ -5,8 +6,9 @@ import time
 import uuid
 from queue import Queue
 from typing import Dict, List, Union
-
+import json
 import pandas as pd
+from datetime import datetime, timezone
 
 from .log_config import logger
 
@@ -40,6 +42,26 @@ class DatasetWriter:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self._flush_all_buffers()
         self._stop_write_threads()
+        
+        # Update metadata timestamp if it exists
+        metadata_file = f"{self.dataset.root_path}/{self.dataset.name}/metadata.json"
+        if self.dataset.fs.exists(metadata_file):
+            try:
+                with self.dataset.fs.open(metadata_file, "r") as f:
+                    metadata = json.load(f)
+                metadata["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S%z")
+                logger.info(f"metadata_file: {metadata_file}")
+                with self.dataset.fs.open(metadata_file, "w") as f:
+                    json.dump(metadata, f, indent=2)
+                    logger.info(f"Updated metadata timestamp: {metadata['updated_at']}")
+                logger.info(f"Updated metadata {metadata}")
+            except Exception as e:
+                logger.error(f"Error updating metadata timestamp: {e}")
+        else:
+            logger.warning(f"Metadata file not found: {metadata_file}")
+        with self.dataset.fs.open(metadata_file, "r") as f:
+            metadata = json.load(f)
+        logger.info(f"metadata: {metadata}")
 
     def _start_write_threads(self):
         for _ in range(self.num_buffers):
