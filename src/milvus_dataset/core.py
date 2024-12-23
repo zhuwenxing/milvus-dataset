@@ -64,14 +64,14 @@ class ConfigManager:
         return self.config
 
     def init_storage(
-        self, root_path: str, storage_type: StorageType = StorageType.LOCAL, **options
+        self, root_path: str, storage_type: StorageType = StorageType.LOCAL, options=None
     ):
         logger.info(f"Initializing storage with config: {options}")
         if storage_type == StorageType.S3:
             options = self._prepare_s3_options(options)
             self._verify_s3_connection(root_path, options)
         config = DatasetConfig(
-            storage=StorageConfig(type=storage_type, root_path=root_path, options=options)
+            storage=StorageConfig(storage_type=storage_type, root_path=root_path, options=options)
         )
         self._initialize(config)
 
@@ -99,7 +99,7 @@ class ConfigManager:
         try:
             logger.info(f"Connecting to S3/MinIO with options: {options}")
             fs = fsspec.filesystem("s3", **options)
-            bucket = root_path.split("://")[1].split("/")[0]
+            bucket = root_path.split("/")[0]
 
             try:
                 fs.ls(bucket)
@@ -129,8 +129,9 @@ class Dataset:
     def __init__(self, name: str, split="train"):
         self.name = name
         self.config = get_config()
-        self.fs = _create_filesystem(self.config.storage)
-        self.root_path = self.config.storage.root_path
+        self.storage = self.config.storage
+        self.fs = _create_filesystem(self.storage)
+        self.root_path = self.storage.root_path
         self._schema = None
         self.metadata = self._load_metadata()
         self.split = split
@@ -364,7 +365,8 @@ class Dataset:
                 total_size = 0
                 schema_dict = {}
                 num_files = 0
-
+                files = self.fs.ls(f"{path}")
+                logger.info(f"files in path {path}: {files}")
                 for file in self.fs.glob(f"{path}/*.parquet"):
                     num_files += 1
                     with self.fs.open(file, "rb") as f:
@@ -471,7 +473,7 @@ class Dataset:
         writer = self.get_writer(mode=mode)
         result = writer.write(data, verify_schema=verify_schema)
 
-        self._summary = None       
+        self._summary = None
         return result
 
     def read(self, mode: str = "stream", batch_size: int = 1000):
@@ -578,66 +580,44 @@ class DatasetDict(dict):
     def __getitem__(self, key: str) -> Dataset:
         return super().__getitem__(key)
 
-    def save(self, destination: StorageConfig):
+    def to_storage(self, destination: StorageConfig):
         """
         Save the dataset by copying all files to a specified destination using the storage utilities.
         The destination can be any supported storage type (local, S3, GCS).
 
         Args:
             destination (StorageConfig): The storage configuration for the destination where the dataset should be saved.
+
+        Raises:
+            Exception: If there is an error copying the dataset directory
         """
         from .storage import copy_data
-        
-        # Copy dataset splits
-        for split, dataset in self.datasets.items():
-            source_path = f"{dataset.root_path}/{dataset.name}/{split}"
-            dest_path = f"{destination.root_path}/{dataset.name}/{split}"
-            
-            try:
-                logger.info(f"Copying split {split} from {source_path} to {dest_path}")
-                results = copy_data(
-                    source_config=dataset.storage,
-                    dest_config=destination,
-                    source_path=source_path,
-                    dest_path=dest_path
-                )
-                
-                # Log copy results
-                for src, dst, status in results:
-                    if status == "Success":
-                        logger.debug(f"Successfully copied {src} to {dst}")
-                    else:
-                        logger.warning(f"Issue copying {src} to {dst}: {status}")
-                
-            except Exception as e:
-                logger.error(f"Failed to copy split {split}: {e!s}")
-                continue
 
-        # Copy dataset metadata directory
+        # Get source dataset directory and storage config from train split
+        source_storage = self.datasets['train'].storage
+        source_path = os.path.join(source_storage.root_path, self.name)
+        dest_path = os.path.join(destination.root_path, self.name)
+
         try:
-            metadata_path = f"{self.datasets['train'].root_path}/{self.name}"
-            dest_metadata_path = f"{destination.root_path}/{self.name}"
-            
-            logger.info(f"Copying metadata from {metadata_path} to {dest_metadata_path}")
+            logger.info(f"Copying dataset from {source_path} to {dest_path}")
             results = copy_data(
-                source_config=self.datasets['train'].storage,
+                source_config=source_storage,
                 dest_config=destination,
-                source_path=metadata_path,
-                dest_path=dest_metadata_path
+                source_path=source_path,
+                dest_path=dest_path
             )
-            
-            # Log metadata copy results
+
             for src, dst, status in results:
                 if status == "Success":
                     logger.debug(f"Successfully copied {src} to {dst}")
                 else:
                     logger.warning(f"Issue copying {src} to {dst}: {status}")
-                    
-        except Exception as e:
-            logger.error(f"Failed to copy metadata directory: {e!s}")
-            raise
 
-        logger.info(f"Dataset '{self.name}' has been successfully saved to {destination.root_path}")
+            logger.info(f"Dataset '{self.name}' has been successfully saved to {destination.root_path}")
+        except Exception as e:
+            error_msg = f"Failed to copy dataset directory: {e!s}"
+            logger.error(error_msg)
+            raise Exception(error_msg) from e
 
     def get_metadata(self):
         self._load_metadata()
@@ -646,7 +626,7 @@ class DatasetDict(dict):
 
     def set_metadata(self, metadata: Union[DatasetMetadata, Dict[str, Any]]):
         """Set metadata for the dataset and save it to metadata.json
-        
+
         Args:
             metadata: Either a DatasetMetadata object or a dictionary containing metadata fields to update
         """
@@ -658,7 +638,7 @@ class DatasetDict(dict):
                     created_at=current_time,
                     updated_at=current_time
                 )
-            
+
             # Update only the provided fields
             for key, value in metadata.items():
                 if hasattr(self.meta, key) and key not in ['created_at', 'updated_at']:
@@ -670,8 +650,8 @@ class DatasetDict(dict):
                 metadata.updated_at = self.meta.updated_at
             self.meta = metadata
         logger.info(f"Updated metadata: {self.meta}")
-            
-        self._save_metadata()    
+
+        self._save_metadata()
 
     def _load_metadata(self):
         """Load metadata from metadata.json if it exists"""
@@ -692,7 +672,7 @@ class DatasetDict(dict):
         """Save metadata to metadata.json"""
         if self.meta is None:
             return
-        
+
         metadata_file = f"{self.storage.root_path}/{self.name}/metadata.json"
         try:
             with self.datasets["train"].fs.open(metadata_file, "w") as f:
@@ -866,7 +846,7 @@ dataset: {self.name}
         elif mode == "import":
             # Use save to method to save the dataset to Milvus storage
             # Sync data to Milvus storage
-            self.save(milvus_storage)
+            self.to_storage(milvus_storage)
             # List all files in train split
             # Create fs by Milvus storage
             milvus_fs = _create_filesystem(milvus_storage)
@@ -968,6 +948,110 @@ dataset: {self.name}
             print(f"Error occurred during upload: {e!s}")
             raise
 
+    def generate_data(
+        self, 
+        num_rows: Union[int, Dict[str, int]] = {"train": 1000, "test": 200},
+        splits: Optional[List[str]] = None,
+        target_file_size_mb: int = 512,
+        num_buffers: int = 15,
+        queue_size: int = 30
+    ) -> None:
+        """Generate synthetic data based on the schema.
+
+        Args:
+            num_rows (Union[int, Dict[str, int]], optional): Number of rows to generate.
+                Can be either:
+                - An integer: Same number of rows for all splits
+                - A dictionary: Mapping split names to their row counts, e.g. {"train": 1000, "test": 200}
+                Defaults to {"train": 1000, "test": 200}.
+            splits (List[str], optional): List of splits to generate data for. If None, uses ["train", "test"].
+            target_file_size_mb (int, optional): Target size of each parquet file in MB. Defaults to 512.
+            num_buffers (int, optional): Number of buffers for writing. Defaults to 15.
+            queue_size (int, optional): Size of the writer queue. Defaults to 30.
+        """
+        import numpy as np
+        from random import randint, random, choice
+        import string
+        import pandas as pd
+
+        if splits is None:
+            splits = ["train", "test"]
+
+        # Convert num_rows to dictionary if it's an integer
+        if isinstance(num_rows, int):
+            num_rows = {split: num_rows for split in splits}
+        else:
+            # Ensure all requested splits have a row count
+            for split in splits:
+                if split not in num_rows:
+                    raise ValueError(f"No row count specified for split '{split}' in num_rows dictionary")
+
+        for split in splits:
+            dataset = self.datasets[split]
+            schema = dataset.get_schema()
+            if schema is None:
+                raise ValueError(f"No schema found for split '{split}'. Please set schema first.")
+
+            split_num_rows = num_rows[split]
+            logger.info(f"Generating {split_num_rows} rows for split '{split}'")
+
+            # Use context manager for writer
+            with dataset.get_writer(
+                mode="overwrite",
+                target_file_size_mb=target_file_size_mb,
+                num_buffers=num_buffers,
+                queue_size=queue_size
+            ) as writer:
+                batch_size = min(split_num_rows, 10000)  # Process in batches to avoid memory issues
+                for batch_start in range(0, split_num_rows, batch_size):
+                    batch_end = min(batch_start + batch_size, split_num_rows)
+                    batch_size_actual = batch_end - batch_start
+                    
+                    data = []
+                    for i in range(batch_size_actual):
+                        row = {}
+                        for field in schema.fields:
+                            if field.dtype in [DataType.INT8, DataType.INT16, DataType.INT32, DataType.INT64]:
+                                row[field.name] = randint(-100, 100)
+                            elif field.dtype in [DataType.FLOAT, DataType.DOUBLE]:
+                                row[field.name] = random() * 200 - 100
+                            elif field.dtype in [DataType.STRING, DataType.VARCHAR]:
+                                length = min(10, field.max_length) if field.max_length else 10
+                                row[field.name] = ''.join(choice(string.ascii_letters) for _ in range(length))
+                            elif field.dtype == DataType.BOOL:
+                                row[field.name] = choice([True, False])
+                            elif field.dtype == DataType.JSON:
+                                row[field.name] = {"key": randint(1, 100), "value": random()}
+                            elif field.dtype == DataType.ARRAY:
+                                length = field.max_capacity if field.max_capacity else 5
+                                if field.element_type in [DataType.INT8, DataType.INT16, DataType.INT32, DataType.INT64]:
+                                    row[field.name] = [randint(-100, 100) for _ in range(length)]
+                                elif field.element_type in [DataType.FLOAT, DataType.DOUBLE]:
+                                    row[field.name] = [random() * 200 - 100 for _ in range(length)]
+                                elif field.element_type in [DataType.STRING, DataType.VARCHAR]:
+                                    str_length = min(10, field.max_length) if field.max_length else 10
+                                    row[field.name] = [''.join(choice(string.ascii_letters) for _ in range(str_length)) for _ in range(length)]
+                            elif field.dtype in [DataType.FLOAT_VECTOR, DataType.FLOAT16_VECTOR, DataType.BFLOAT16_VECTOR]:
+                                dim = field.dim
+                                row[field.name] = list(np.random.randn(dim))
+                            elif field.dtype == DataType.BINARY_VECTOR:
+                                dim = field.dim // 8  # Binary vectors are packed into bytes
+                                row[field.name] = [randint(0, 255) for _ in range(dim)]
+                            elif field.dtype == DataType.SPARSE_FLOAT_VECTOR:
+                                # Generate sparse vector with ~10% non-zero elements
+                                indices = sorted(np.random.choice(1000, size=100, replace=False))
+                                values = [random() * 2 - 1 for _ in range(len(indices))]
+                                row[field.name] = {"indices": indices, "values": values}
+                        data.append(row)
+
+                    # Convert to DataFrame and write
+                    df = pd.DataFrame(data)
+                    t0_write = time.time()
+                    writer.write(df, verify_schema=True)
+                    logger.info(f"Write batch {batch_start//batch_size + 1} cost {time.time()-t0_write:.2f}s")
+
+            logger.info(f"Generated {num_rows[split]} rows of data for split '{split}'")
+            
 
 def list_datasets() -> List[Dict[str, Union[str, Dict]]]:
     config = get_config()

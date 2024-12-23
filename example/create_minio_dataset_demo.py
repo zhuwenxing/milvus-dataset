@@ -20,7 +20,7 @@ options = {
 }
 
 ConfigManager().init_storage(
-    root_path="s3://milvus-dataset/benchmark-dataset", storage_type=StorageType.S3, **options
+    root_path="milvus-dataset/benchmark-dataset", storage_type=StorageType.S3, **options
 )
 
 

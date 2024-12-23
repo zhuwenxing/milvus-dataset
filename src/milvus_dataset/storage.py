@@ -16,22 +16,23 @@ class StorageType(Enum):
 
 
 class StorageConfig(BaseModel):
-    type: StorageType
+    storage_type: StorageType
     root_path: str
-    options: Dict[str, Any] = {}
+    options: Dict[str, Any]|None = None
 
 
 def _create_filesystem(storage_config: StorageConfig) -> AbstractFileSystem:
-    logger.info(f"Creating filesystem with config: {storage_config.dict()}")
-    if storage_config.type == StorageType.LOCAL:
+    if storage_config.storage_type == StorageType.LOCAL:
         return fsspec.filesystem("file")
-    elif storage_config.type == StorageType.S3:
+    elif storage_config.storage_type == StorageType.S3:
         try:
             fs = fsspec.filesystem("s3", **storage_config.options)
             # Test connection
-            bucket = storage_config.root_path.split("://")[1].split("/")[0]
+            bucket = storage_config.root_path.split("/")[0]
+            print(bucket)
             try:
-                fs.ls(bucket)
+                files = fs.ls(bucket)
+                logger.info(f"bucket files: {files}")
                 logger.info(f"Successfully connected to existing bucket: {bucket}")
             except Exception:
                 try:
@@ -44,10 +45,10 @@ def _create_filesystem(storage_config: StorageConfig) -> AbstractFileSystem:
         except Exception as e:
             logger.error(f"Failed to create S3 filesystem: {e!s}")
             raise
-    elif storage_config.type == StorageType.GCS:
+    elif storage_config.storage_type == StorageType.GCS:
         return fsspec.filesystem("gcs", **storage_config.options)
     else:
-        raise ValueError(f"Unsupported storage type: {storage_config.type}")
+        raise ValueError(f"Unsupported storage type: {storage_config.storage_type}")
 
 
 def copy_between_filesystems(
