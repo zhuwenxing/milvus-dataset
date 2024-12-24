@@ -1,12 +1,6 @@
-import glob
-from threading import local
-import time
-
-import pandas as pd
 from loguru import logger
-from pymilvus import CollectionSchema, DataType, FieldSchema
 
-from milvus_dataset import ConfigManager, StorageType, load_dataset, StorageConfig, storage
+from milvus_dataset import ConfigManager, StorageConfig, StorageType, load_dataset
 
 logger.info("start to create dataset")
 
@@ -35,12 +29,11 @@ print(test_data)
 print(neighbors_data)
 
 
-#minio storage
+# minio storage
 local_storage = StorageConfig(
     root_path="./data/cohere-dataset-v2",
     storage_type=StorageType.LOCAL,
 )
-
 
 
 dataset.to_storage(local_storage)

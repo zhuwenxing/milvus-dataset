@@ -1,12 +1,6 @@
-import glob
-from threading import local
-import time
-
-import pandas as pd
 from loguru import logger
-from pymilvus import CollectionSchema, DataType, FieldSchema
 
-from milvus_dataset import ConfigManager, StorageType, load_dataset, StorageConfig
+from milvus_dataset import ConfigManager, StorageConfig, StorageType, load_dataset
 
 logger.info("start to create dataset")
 
@@ -23,10 +17,9 @@ logger.info("succeed to load dataset")
 print(dataset)
 
 
-
-#minio storage
+# minio storage
 minio_storage = StorageConfig(
-    root_path="s3://milvus-dataset/benchmark-dataset-to-storage-v2",
+    root_path="milvus-dataset/benchmark-dataset-to-storage-v2",
     storage_type=StorageType.S3,
     options={
         "key": "minioadmin",  # MinIO访问密钥

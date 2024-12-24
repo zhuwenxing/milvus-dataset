@@ -1,0 +1,380 @@
+import json
+import random
+
+import numpy as np
+from faker import Faker
+from ml_dtypes import bfloat16
+from pymilvus import DataType, FunctionType
+from sklearn import preprocessing
+
+fake = Faker()
+RNG = np.random.default_rng()
+
+
+DEFAULT_FLOAT_INDEX_PARAM = {
+    "index_type": "HNSW",
+    "metric_type": "L2",
+    "params": {"M": 48, "efConstruction": 500},
+}
+DEFAULT_BINARY_INDEX_PARAM = {
+    "index_type": "BIN_IVF_FLAT",
+    "metric_type": "JACCARD",
+    "params": {"M": 48},
+}
+DEFAULT_SPARSE_INDEX_PARAM = {"index_type": "SPARSE_INVERTED_INDEX", "metric_type": "IP"}
+DEFAULT_BM25_INDEX_PARAM = {
+    "index_type": "SPARSE_INVERTED_INDEX",
+    "metric_type": "BM25",
+    "params": {"bm25_k1": 1.25, "bm25_b": 0.75},
+}
+
+
+def gen_varchar_data(length: int, nb: int, text_mode=False):
+    if text_mode:
+        return [fake.text() for _ in range(nb)]
+    else:
+        return ["".join([chr(random.randint(97, 122)) for _ in range(length)]) for _ in range(nb)]
+
+
+def gen_sparse_vectors(nb, dim=1000):
+    # sparse format is dok, dict of keys
+
+    rng = np.random.default_rng()
+    vectors = [
+        {d: rng.random() for d in list({*random.sample(range(dim), random.randint(20, 30)), 0, 1})}
+        for _ in range(nb)
+    ]
+    vectors = [json.dumps(vector) for vector in vectors]
+    return vectors
+
+
+def gen_float_vectors(nb, dim):
+    vectors = [[random.random() for _ in range(dim)] for _ in range(nb)]
+    vectors = preprocessing.normalize(vectors, axis=1, norm="l2")
+    fp32_vectors = [np.array(x, dtype=np.dtype("float32")) for x in vectors]
+    return fp32_vectors
+
+
+def gen_binary_vectors(nb, dim):
+    # binary: each int presents 8 dimension
+    # so if binary vector dimension is 16, use [x, y], which x and y could be any int between 0 and 255
+    vectors = [[random.randint(0, 255) for _ in range(dim // 8)] for _ in range(nb)]
+    vectors = [np.array(x, dtype=np.dtype("uint8")) for x in vectors]
+    return vectors
+
+
+def gen_fp16_vectors(nb, dim):
+    """
+    generate float16 vector data
+    raw_vectors : the vectors
+    fp16_vectors: the bytes used for insert
+    return: raw_vectors and fp16_vectors
+    """
+    fp16_vectors = []
+    for _ in range(nb):
+        raw_vector = [random.random() for _ in range(dim)]
+        fp16_vector = np.array(raw_vector, dtype=np.float16).view(np.uint8).tolist()
+        fp16_vectors.append(fp16_vector)
+    fp16_vectors = [np.array(x, dtype=np.dtype("uint8")) for x in fp16_vectors]
+    return fp16_vectors
+
+
+def gen_bf16_vectors(nb, dim):
+    """
+    generate brain float16 vector data
+    raw_vectors : the vectors
+    bf16_vectors: the bytes used for insert
+    return: raw_vectors and bf16_vectors
+    """
+    bf16_vectors = []
+    for _ in range(nb):
+        raw_vector = [random.random() for _ in range(dim)]
+        bf16_vector = np.array(raw_vector, dtype=bfloat16).view(np.uint8).tolist()
+        bf16_vectors.append(bf16_vector)
+    bf16_vectors = [np.array(x, dtype=np.dtype("uint8")) for x in bf16_vectors]
+    return bf16_vectors
+
+
+def gen_row_data_by_schema(nb=3000, schema=None, start=None):
+    if schema is None:
+        raise Exception("schema is None")
+    # ignore auto id field and the fields in function output
+    func_output_fields = []
+    if hasattr(schema, "functions"):
+        functions = schema.functions
+        for func in functions:
+            output_field_names = func.output_field_names
+            func_output_fields.extend(output_field_names)
+    func_output_fields = list(set(func_output_fields))
+    fields = schema.fields
+    fields_needs_data = []
+    for field in fields:
+        if field.auto_id:
+            continue
+        if field.name in func_output_fields:
+            continue
+        fields_needs_data.append(field)
+    data = []
+    for _ in range(nb):
+        tmp = {}
+        for field in fields_needs_data:
+            tmp[field.name] = gen_data_by_collection_field(field)
+            if start is not None and field.dtype == DataType.INT64:
+                tmp[field.name] = start
+                start += 1
+        data.append(tmp)
+    return data
+
+
+def gen_data_by_collection_field(field, nb=None, start=None):  # noqa
+    # if nb is None, return one data, else return a list of data
+    data_type = field.dtype
+    enable_analyzer = field.params.get("enable_analyzer", False)
+    if data_type == DataType.BOOL:
+        if nb is None:
+            return random.choice([True, False])
+        return [random.choice([True, False]) for _ in range(nb)]
+    if data_type == DataType.INT8:
+        if nb is None:
+            return random.randint(-128, 127)
+        return [random.randint(-128, 127) for _ in range(nb)]
+    if data_type == DataType.INT16:
+        if nb is None:
+            return random.randint(-32768, 32767)
+        return [random.randint(-32768, 32767) for _ in range(nb)]
+    if data_type == DataType.INT32:
+        if nb is None:
+            return random.randint(-2147483648, 2147483647)
+        return [random.randint(-2147483648, 2147483647) for _ in range(nb)]
+    if data_type == DataType.INT64:
+        if nb is None:
+            return random.randint(-9223372036854775808, 9223372036854775807)
+        if start is not None:
+            return list(range(start, start + nb))
+        return [random.randint(-9223372036854775808, 9223372036854775807) for _ in range(nb)]
+    if data_type == DataType.FLOAT:
+        if nb is None:
+            return np.float32(random.random())
+        return [np.float32(random.random()) for _ in range(nb)]
+    if data_type == DataType.DOUBLE:
+        if nb is None:
+            return np.float64(random.random())
+        return [np.float64(random.random()) for _ in range(nb)]
+    if data_type == DataType.VARCHAR:
+        max_length = field.params["max_length"]
+        max_length = min(20, max_length - 1)
+        length = random.randint(0, max_length)
+        if nb is None:
+            return gen_varchar_data(length=length, nb=1, text_mode=enable_analyzer)[0]
+        return gen_varchar_data(length=length, nb=nb, text_mode=enable_analyzer)
+    if data_type == DataType.JSON:
+        if nb is None:
+            return json.dumps({"name": fake.name(), "address": fake.address()})
+        data = [json.dumps({"name": str(i), "address": i} for i in range(nb))]
+        return data
+    if data_type == DataType.FLOAT_VECTOR:
+        dim = field.params["dim"]
+        if nb is None:
+            vector = gen_float_vectors(nb=1, dim=dim)[0]
+            vector = np.array(vector, dtype=np.float32)
+            return vector
+        vectors = gen_float_vectors(nb, dim)
+        vectors = [np.array(vector, dtype=np.float32) for vector in vectors]
+        return vectors
+    if data_type == DataType.BFLOAT16_VECTOR:
+        dim = field.params["dim"]
+        if nb is None:
+            vector = gen_bf16_vectors(nb=1, dim=dim)[0]
+            return vector
+        vectors = gen_bf16_vectors(nb, dim)
+        return vectors
+    if data_type == DataType.FLOAT16_VECTOR:
+        dim = field.params["dim"]
+        if nb is None:
+            vector = gen_fp16_vectors(nb=1, dim=dim)[0]
+            return vector
+        vectors = gen_fp16_vectors(nb, dim)
+        return vectors
+    if data_type == DataType.BINARY_VECTOR:
+        dim = field.params["dim"]
+        if nb is None:
+            vector = gen_binary_vectors(nb=1, dim=dim)[0]
+            return vector
+        vectors = gen_binary_vectors(nb, dim)
+        return vectors
+    if data_type == DataType.SPARSE_FLOAT_VECTOR:
+        if nb is None:
+            return gen_sparse_vectors(nb=1)[0]
+        return gen_sparse_vectors(nb=nb)
+    if data_type == DataType.ARRAY:
+        max_capacity = field.params["max_capacity"]
+        max_capacity = min(20, max_capacity - 1)
+        element_type = field.element_type
+        if element_type == DataType.INT8:
+            if nb is None:
+                return [random.randint(-128, 127) for _ in range(max_capacity)]
+            return [[random.randint(-128, 127) for _ in range(max_capacity)] for _ in range(nb)]
+        if element_type == DataType.INT16:
+            if nb is None:
+                return [random.randint(-32768, 32767) for _ in range(max_capacity)]
+            return [[random.randint(-32768, 32767) for _ in range(max_capacity)] for _ in range(nb)]
+        if element_type == DataType.INT32:
+            if nb is None:
+                return [random.randint(-2147483648, 2147483647) for _ in range(max_capacity)]
+            return [
+                [random.randint(-2147483648, 2147483647) for _ in range(max_capacity)]
+                for _ in range(nb)
+            ]
+        if element_type == DataType.INT64:
+            if nb is None:
+                return [
+                    random.randint(-9223372036854775808, 9223372036854775807)
+                    for _ in range(max_capacity)
+                ]
+            return [
+                [
+                    random.randint(-9223372036854775808, 9223372036854775807)
+                    for _ in range(max_capacity)
+                ]
+                for _ in range(nb)
+            ]
+
+        if element_type == DataType.BOOL:
+            if nb is None:
+                return [random.choice([True, False]) for _ in range(max_capacity)]
+            return [[random.choice([True, False]) for _ in range(max_capacity)] for _ in range(nb)]
+
+        if element_type == DataType.FLOAT:
+            if nb is None:
+                return [np.float32(random.random()) for _ in range(max_capacity)]
+            return [[np.float32(random.random()) for _ in range(max_capacity)] for _ in range(nb)]
+        if element_type == DataType.DOUBLE:
+            if nb is None:
+                return [np.float64(random.random()) for _ in range(max_capacity)]
+            return [[np.float64(random.random()) for _ in range(max_capacity)] for _ in range(nb)]
+
+        if element_type == DataType.VARCHAR:
+            max_length = field.params["max_length"]
+            max_length = min(20, max_length - 1)
+            length = random.randint(0, max_length)
+            if nb is None:
+                return [
+                    "".join([chr(random.randint(97, 122)) for _ in range(length)])
+                    for _ in range(max_capacity)
+                ]
+            return [
+                [
+                    "".join([chr(random.randint(97, 122)) for _ in range(length)])
+                    for _ in range(max_capacity)
+                ]
+                for _ in range(nb)
+            ]
+    return None
+
+
+def get_scalar_field_name_list(schema=None):
+    vec_fields = []
+    if schema is None:
+        raise Exception("schema is None")
+    fields = schema.fields
+    for field in fields:
+        if field.dtype in [
+            DataType.BOOL,
+            DataType.INT8,
+            DataType.INT16,
+            DataType.INT32,
+            DataType.INT64,
+            DataType.FLOAT,
+            DataType.DOUBLE,
+            DataType.VARCHAR,
+        ]:
+            vec_fields.append(field.name)
+    return vec_fields
+
+
+def get_float_vec_field_name_list(schema=None):
+    vec_fields = []
+    if schema is None:
+        raise Exception("schema is None")
+    fields = schema.fields
+    for field in fields:
+        if field.dtype in [
+            DataType.FLOAT_VECTOR,
+            DataType.FLOAT16_VECTOR,
+            DataType.BFLOAT16_VECTOR,
+        ]:
+            vec_fields.append(field.name)
+    return vec_fields
+
+
+def get_binary_vec_field_name_list(schema=None):
+    vec_fields = []
+    if schema is None:
+        raise Exception("schema is None")
+    fields = schema.fields
+    for field in fields:
+        if field.dtype in [DataType.BINARY_VECTOR]:
+            vec_fields.append(field.name)
+    return vec_fields
+
+
+def get_bm25_vec_field_name_list(schema=None):
+    if schema is None:
+        raise Exception("schema is None")
+    if not hasattr(schema, "functions"):
+        return []
+    functions = schema.functions
+    bm25_func = [func for func in functions if func.type == FunctionType.BM25]
+    bm25_outputs = []
+    for func in bm25_func:
+        bm25_outputs.extend(func.output_field_names)
+    bm25_outputs = list(set(bm25_outputs))
+
+    return bm25_outputs
+
+
+def get_sparse_vec_field_name_list(schema=None):
+    vec_fields = []
+    if schema is None:
+        raise Exception("schema is None")
+    fields = schema.fields
+    for field in fields:
+        if (
+            field.dtype == DataType.SPARSE_FLOAT_VECTOR
+            and field.name not in get_bm25_vec_field_name_list(schema)
+        ):
+            vec_fields.append(field.name)
+    return vec_fields
+
+
+def create_index_for_all_vector_fields(collection):
+    schema = collection.schema
+    indexes = [index.to_dict() for index in collection.indexes]
+    indexed_fields = [index["field"] for index in indexes]
+    float_vector_field_names = get_float_vec_field_name_list(schema)
+    binary_vector_field_names = get_binary_vec_field_name_list(schema)
+    sparse_vector_field_names = get_sparse_vec_field_name_list(schema)
+    bm25_sparse_field_names = get_bm25_vec_field_name_list(schema)
+    # create index for float vector fields
+    for f in float_vector_field_names:
+        if f in indexed_fields:
+            continue
+        collection.create_index(
+            f,
+            DEFAULT_FLOAT_INDEX_PARAM,
+        )
+    # create index for binary vector fields
+    for f in binary_vector_field_names:
+        if f in indexed_fields:
+            continue
+        collection.create_index(f, DEFAULT_BINARY_INDEX_PARAM)
+
+    for f in sparse_vector_field_names:
+        if f in indexed_fields:
+            continue
+        collection.create_index(f, DEFAULT_SPARSE_INDEX_PARAM)
+
+    for f in bm25_sparse_field_names:
+        if f in indexed_fields:
+            continue
+        collection.create_index(f, DEFAULT_BM25_INDEX_PARAM)
