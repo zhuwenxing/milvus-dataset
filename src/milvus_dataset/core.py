@@ -6,24 +6,15 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Tuple
 
 import fsspec
+from numpy import indices
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
-import s3fs
+from pydantic import BaseModel
 from huggingface_hub import HfApi
-from pydantic import (
-    BaseModel,
-    Field,
-    TypeAdapter,
-    ValidationError,
-    conlist,
-    constr,
-    create_model,
-    field_validator,
-    model_validator,
-)
 from pymilvus import (
     BulkInsertState,
     Collection,
@@ -194,158 +185,93 @@ class Dataset:
             self._schema = self._load_schema()
         return self._schema
 
-    def _create_sparse_vector_model(self):
-        """Create a model for sparse vector data."""
-
-        class SparseVectorCOO(BaseModel):
-            indices: List[int]
-            values: List[float]
-
-        return SparseVectorCOO
-
-    def _get_base_type(self, data_type: DataType):
-        """Get the base Python type for a given DataType."""
-        if data_type in [
-            DataType.INT8,
-            DataType.INT16,
-            DataType.INT32,
-            DataType.INT64,
-        ]:
-            return int
-        elif data_type in [DataType.FLOAT, DataType.DOUBLE]:
-            return float
-        elif data_type in [DataType.STRING, DataType.VARCHAR]:
-            return str
-        elif data_type == DataType.BOOL:
-            return bool
-        elif data_type == DataType.JSON:
-            return Dict[str, Any]
-        else:
-            return Any
-
-    def _create_vector_field_type(self, field_schema: FieldSchema):
-        """Create field type for vector data types."""
-        if not field_schema.dim:
-            return List[float if field_schema.dtype == DataType.FLOAT_VECTOR else int]
-
-        if field_schema.dtype == DataType.BINARY_VECTOR:
-            return conlist(
-                int,
-                min_length=field_schema.dim / 8,
-                max_length=field_schema.dim / 8,
-            )
-        elif field_schema.dtype in [DataType.FLOAT16_VECTOR, DataType.BFLOAT16_VECTOR]:
-            return conlist(
-                float,
-                min_length=field_schema.dim * 2,
-                max_length=field_schema.dim * 2,
-            )
-        else:  # FLOAT_VECTOR
-            return conlist(
-                float,
-                min_length=field_schema.dim,
-                max_length=field_schema.dim,
-            )
-
-    def _create_array_field_type(self, field_schema: FieldSchema):
-        """Create field type for array data types."""
-        element_type = self._get_base_type(field_schema.element_type)
-
-        if field_schema.max_capacity:
-            if field_schema.element_type == DataType.VARCHAR and field_schema.max_length:
-                return conlist(
-                    constr(max_length=field_schema.max_length),
-                    max_length=field_schema.max_capacity,
-                )
-            return conlist(element_type, max_length=field_schema.max_capacity)
-
-        return List[element_type]
-
-    def _create_field_model(self, field_schema: FieldSchema):
-        """Create a field model based on the schema."""
-        field_type = self._get_base_type(field_schema.dtype)
-        field_kwargs = {}
-
-        if field_schema.dtype == DataType.VARCHAR and field_schema.max_length:
-            field_type = constr(max_length=field_schema.max_length)
-        elif field_schema.dtype == DataType.ARRAY:
-            field_type = self._create_array_field_type(field_schema)
-        elif field_schema.dtype in [
-            DataType.FLOAT_VECTOR,
-            DataType.BINARY_VECTOR,
-            DataType.FLOAT16_VECTOR,
-            DataType.BFLOAT16_VECTOR,
-        ]:
-            field_type = self._create_vector_field_type(field_schema)
-        elif field_schema.dtype == DataType.SPARSE_FLOAT_VECTOR:
-            sparse_vector_model = self._create_sparse_vector_model()
-            field_type = Union[Dict[int, float], sparse_vector_model]
-
-        return field_type, Field(..., **field_kwargs)
 
     def create_schema_model(self):
-        """Create a Pydantic model to validate the dataset's schema."""
-
-        def create_array_validator(element_type: DataType):
-            base_type = self._get_base_type(element_type)
-
-            def validate_array(cls, v):
-                for item in v:
-                    if not isinstance(item, base_type):
-                        raise ValueError(
-                            f"All items must be of type {base_type.__name__}. Found item of type {type(item).__name__}"
-                        )
-                return v
-
-            return validate_array
-
-        fields = {}
-        validators = {}
+        """Create a PyArrow schema to validate the dataset's schema."""
+        fields = []
         for schema in self._schema.fields:
-            fields[schema.name], _ = self._create_field_model(schema)
-            if schema.dtype == DataType.ARRAY:
-                validators[f"validate_{schema.name}"] = field_validator(schema.name)(
-                    create_array_validator(schema.element_type)
-                )
+            if schema.dtype == DataType.VARCHAR:
+                pa_type = pa.string()
+            elif schema.dtype == DataType.STRING:
+                pa_type = pa.string()
+            elif schema.dtype == DataType.BOOL:
+                pa_type = pa.bool_()
+            elif schema.dtype == DataType.INT8:
+                pa_type = pa.int8()
+            elif schema.dtype == DataType.INT16:
+                pa_type = pa.int16()
+            elif schema.dtype == DataType.INT32:
+                pa_type = pa.int32()
+            elif schema.dtype == DataType.INT64:
+                pa_type = pa.int64()
+            elif schema.dtype == DataType.FLOAT:
+                pa_type = pa.float32()
+            elif schema.dtype == DataType.DOUBLE:
+                pa_type = pa.float64()
+            elif schema.dtype == DataType.FLOAT_VECTOR:
+                pa_type = pa.list_(pa.float32(), schema.dim)
+            elif schema.dtype == DataType.FLOAT16_VECTOR:
+                # float16向量使用uint8存储，每个float16值占用2字节，所以维度*2
+                pa_type = pa.binary(schema.dim*2)
+            elif schema.dtype == DataType.BFLOAT16_VECTOR:
+                # bfloat16向量也使用uint8存储，每个bfloat16值占用2字节，所以维度*2
+               pa_type = pa.binary(schema.dim*2)
+            elif schema.dtype == DataType.BINARY_VECTOR:
+                # binary向量使用bytes类型存储，每个值保存8位，所以维度//8 
+                pa_type = pa.binary(schema.dim//8)
+            elif schema.dtype == DataType.SPARSE_FLOAT_VECTOR:
+                # 使用struct类型存储稀疏向量
+                pa_type = pa.struct([   
+                    pa.field("indices", pa.list_(pa.int64())),
+                    pa.field("values", pa.list_(pa.float32()))
+                ])
+            elif schema.dtype == DataType.ARRAY:
+                element_type = schema.element_type
+                if element_type == DataType.BOOL:
+                    pa_type = pa.list_(pa.bool_())
+                elif element_type == DataType.INT8:
+                    pa_type = pa.list_(pa.int8())
+                elif element_type == DataType.INT16:
+                    pa_type = pa.list_(pa.int16())
+                elif element_type == DataType.INT32:
+                    pa_type = pa.list_(pa.int32())
+                elif element_type == DataType.INT64:
+                    pa_type = pa.list_(pa.int64())
+                elif element_type == DataType.FLOAT:
+                    pa_type = pa.list_(pa.float32())
+                elif element_type == DataType.DOUBLE:
+                    pa_type = pa.list_(pa.float64())
+                elif element_type == DataType.VARCHAR:
+                    pa_type = pa.list_(pa.string())
+                else:
+                    raise ValueError(f"Unsupported array element type: {element_type}")
+            elif schema.dtype == DataType.JSON:
+                # Use PyArrow's struct type for JSON objects
+                pa_type = pa.struct([])  # Empty struct allows any JSON structure
+            else:
+                raise ValueError(f"Unsupported data type: {schema.dtype}")
+            fields.append(pa.field(schema.name, pa_type))
 
-        RowModel = create_model(  # noqa: N806
-            "DynamicSchemaModel", **fields, __validators__=validators
-        )
+        arrow_schema = pa.schema(fields)
+        return arrow_schema
 
-        class DataFrameModel(BaseModel):
-            data: List[RowModel]
-
-            @model_validator(mode="before")
-            def validate_dataframe(self, values):
-                data = values.get("data")
-                if isinstance(data, pd.DataFrame):
-                    values["data"] = data.to_dict("records")
+    def validate_dataframe(self, values):
+        """Validate data using PyArrow schema and additional constraints."""
+        if isinstance(values, pd.DataFrame):
+            try:
+                # Validate basic types
+                table = pa.Table.from_pandas(values, schema=self.create_schema_model())
                 return values
-
-            class Config:
-                arbitrary_types_allowed = True
-
-        return DataFrameModel, RowModel
-
-    def _verify_schema(self, data: Union[pd.DataFrame, Dict, List[Dict]]):
-        # if column is auto id, remove it from schema
-
-        if isinstance(data, dict) or (isinstance(data, list)):
-            data = pd.DataFrame(data)
-        DataFrameModel, RowModel = self.create_schema_model()  # noqa: N806
-
-        try:
-            t0 = time.time()
-            rows = data.to_dict("records")
-            row_list_adapter = TypeAdapter(List[RowModel])
-            row_list_adapter.validate_python(rows)
-            tt = time.time() - t0
-            logger.info(
-                f"Data conforms to schema, validation took: {tt:.6f} seconds for {len(data)} rows"
-            )
-
-        except ValidationError as e:
-            raise ValueError(f"Data does not conform to schema: {e}") from e
+            except pa.ArrowInvalid as e:
+                raise ValueError(f"Data validation failed: {str(e)}")
+        elif isinstance(values, (dict, list)):
+            try:
+                df = pd.DataFrame(values)
+                return self.validate_dataframe(df)
+            except (pa.ArrowInvalid, ValueError) as e:
+                raise ValueError(f"Data validation failed: {str(e)}")
+        else:
+            raise ValueError(f"Unsupported data type: {type(values)}")
 
     def _get_summary(self) -> Dict[str, Union[str, int, Dict]]:
         if self._summary is None:
@@ -476,7 +402,7 @@ class Dataset:
         self._summary = None
         return result
 
-    def read(self, mode: str = "stream", batch_size: int = 1000):
+    def read(self, mode: str = "full", batch_size: int = 1000):
         return self.reader.read(mode, batch_size)
 
     def get_total_rows(self, split: str) -> int:
@@ -570,7 +496,6 @@ class DatasetDict(dict):
         super().__init__(datasets)
         self.datasets = datasets
         self.name = datasets["train"].name
-        self.train = datasets["train"]
         self.storage = datasets["train"].config.storage
         self._summary = {}
         self._metadata = {}
@@ -839,9 +764,22 @@ dataset: {self.name}
             schema=self["train"].get_schema(),
         )
         print(milvus_client.list_collections())
-
+        # get sparse vector field name
+        sparse_vector_field_names = []
+        for field in self["train"].get_schema().fields:
+            if field.dtype == DataType.SPARSE_FLOAT_VECTOR:
+                sparse_vector_field_names.append(field.name)
         if mode == "insert":
             for data in self["train"].read():
+                for column in sparse_vector_field_names:
+                    tmp_data = data[column].to_list()
+                    data[column] = [
+                        {str(idx): str(val) for idx, val in zip(item['indices'], item['values'])}
+                        for item in tmp_data
+                    ]
+                data = data.to_dict("records")
+                logger.info(data[0])
+
                 milvus_client.insert(collection_name=self.name, data=data)
         elif mode == "import":
             # Use save to method to save the dataset to Milvus storage
@@ -884,6 +822,7 @@ dataset: {self.name}
 
         logger.info(f"Dataset '{self.name}' has been successfully written to Milvus")
         c = Collection(self.name)
+        c.flush()
         logger.info(f"collection schema {c.schema}")
         logger.info(f"collection num entities {c.num_entities}")
 
@@ -911,7 +850,7 @@ dataset: {self.name}
         # if storage is s3, download to local
         if self.storage.type in [StorageType.S3, StorageType.GCS]:
             local_path = tempfile.mkdtemp()
-            self.save(StorageConfig(type=StorageType.LOCAL, root_path=local_path))
+            self.to_storage(StorageConfig(type=StorageType.LOCAL, root_path=local_path))
 
         if token is None:
             token = os.environ.get("HF_TOKEN")
@@ -949,8 +888,8 @@ dataset: {self.name}
             raise
 
     def generate_data(
-        self, 
-        num_rows: Union[int, Dict[str, int]] = {"train": 1000, "test": 200},
+        self,
+        num_rows: Union[int, Dict[str, int]] = None,
         splits: Optional[List[str]] = None,
         target_file_size_mb: int = 512,
         num_buffers: int = 15,
@@ -973,10 +912,12 @@ dataset: {self.name}
         from random import randint, random, choice
         import string
         import pandas as pd
+        from random import sample
 
         if splits is None:
             splits = ["train", "test"]
-
+        if num_rows is None:
+            num_rows = {"train": 1000, "test": 200}
         # Convert num_rows to dictionary if it's an integer
         if isinstance(num_rows, int):
             num_rows = {split: num_rows for split in splits}
@@ -985,6 +926,18 @@ dataset: {self.name}
             for split in splits:
                 if split not in num_rows:
                     raise ValueError(f"No row count specified for split '{split}' in num_rows dictionary")
+
+        def convert_bool_list_to_bytes(bool_list):
+            if len(bool_list) % 8 != 0:
+                raise ValueError("The length of a boolean list must be a multiple of 8")
+
+            byte_array = bytearray(len(bool_list) // 8)
+            for i, bit in enumerate(bool_list):
+                if bit == 1:
+                    index = i // 8
+                    shift = i % 8
+                    byte_array[index] |= (1 << shift)
+            return bytes(byte_array)
 
         for split in splits:
             dataset = self.datasets[split]
@@ -1006,42 +959,184 @@ dataset: {self.name}
                 for batch_start in range(0, split_num_rows, batch_size):
                     batch_end = min(batch_start + batch_size, split_num_rows)
                     batch_size_actual = batch_end - batch_start
-                    
+
                     data = []
                     for i in range(batch_size_actual):
                         row = {}
                         for field in schema.fields:
-                            if field.dtype in [DataType.INT8, DataType.INT16, DataType.INT32, DataType.INT64]:
-                                row[field.name] = randint(-100, 100)
-                            elif field.dtype in [DataType.FLOAT, DataType.DOUBLE]:
-                                row[field.name] = random() * 200 - 100
+                            if field.dtype == DataType.INT8:
+                                row[field.name] = randint(-128, 127)
+                            elif field.dtype == DataType.INT16:
+                                row[field.name] = randint(-2**15, 2**15 - 1)
+                            elif field.dtype == DataType.INT32:
+                                row[field.name] = randint(-2**31, 2**31 - 1)
+                            elif field.dtype == DataType.INT64:
+                                safe_max = 2**53 - 1  # Maximum safe integer in JavaScript/float64
+                                safe_min = -(2**53 - 1)
+                                row[field.name] = randint(safe_min, safe_max)
+                            elif field.dtype == DataType.FLOAT:
+                                # Generate float32 values with different ranges and distributions
+                                dist_type = choice(['uniform', 'normal', 'exp', 'special'])
+                                if dist_type == 'uniform':
+                                    row[field.name] = random() * 1000 - 500  # Reasonable float32 range
+                                elif dist_type == 'normal':
+                                    row[field.name] = float(np.random.normal(0, 100))
+                                elif dist_type == 'exp':
+                                    row[field.name] = float(np.random.exponential(10))
+                                else:  # special values
+                                    row[field.name] = choice([
+                                        1.0,
+                                        -1.0,
+                                        0.0
+                                    ])
+                            elif field.dtype == DataType.DOUBLE:
+                                # Generate float64 values with different ranges and distributions
+                                dist_type = choice(['uniform', 'normal', 'exp', 'special'])
+                                if dist_type == 'uniform':
+                                    row[field.name] = random() * 10000 - 5000  # Reasonable float64 range
+                                elif dist_type == 'normal':
+                                    row[field.name] = float(np.random.normal(0, 1000))
+                                elif dist_type == 'exp':
+                                    row[field.name] = float(np.random.exponential(100))
+                                else:  # special values
+                                    row[field.name] = choice([
+                                        1.0,
+                                        -1.0,
+                                        0.0
+                                    ])
                             elif field.dtype in [DataType.STRING, DataType.VARCHAR]:
-                                length = min(10, field.max_length) if field.max_length else 10
-                                row[field.name] = ''.join(choice(string.ascii_letters) for _ in range(length))
+                                if field.max_length:
+                                    str_length = min(10, field.max_length)
+                                    if random() < 0.98:
+                                        str_length = int(np.random.uniform(0, str_length))
+                                    else:
+                                        str_length = randint(field.max_length // 2, field.max_length)
+                                else:
+                                    str_length = 10
+                                row[field.name] = ''.join(choice(string.ascii_letters) for _ in range(str_length))
                             elif field.dtype == DataType.BOOL:
                                 row[field.name] = choice([True, False])
                             elif field.dtype == DataType.JSON:
-                                row[field.name] = {"key": randint(1, 100), "value": random()}
+                                json_types = ['simple', 'array', 'nested']
+                                json_type = choice(json_types)
+
+                                if json_type == 'simple':
+                                    row[field.name] = {
+                                        "id": randint(1, 1000),
+                                        "value": random() * 100,
+                                        "active": choice([True, False]),
+                                        "name": ''.join(choice(string.ascii_letters) for _ in range(8))
+                                    }
+                                elif json_type == 'array':
+                                    row[field.name] = {
+                                        "tags": [''.join(choice(string.ascii_letters) for _ in range(5)) for _ in range(randint(1, 5))],
+                                        "scores": [random() * 100 for _ in range(randint(1, 3))],
+                                        "flags": [choice([True, False]) for _ in range(randint(1, 3))]
+                                    }
+                                else:  # nested
+                                    row[field.name] = {
+                                        "user": {
+                                            "id": randint(1, 1000),
+                                            "name": ''.join(choice(string.ascii_letters) for _ in range(8)),
+                                            "settings": {
+                                                "theme": choice(["light", "dark"]),
+                                                "notifications": choice([True, False])
+                                            }
+                                        },
+                                        "metadata": {
+                                            "created_at": time.time(),
+                                            "version": f"{randint(1, 5)}.{randint(0, 9)}"
+                                        }
+                                    }
                             elif field.dtype == DataType.ARRAY:
-                                length = field.max_capacity if field.max_capacity else 5
-                                if field.element_type in [DataType.INT8, DataType.INT16, DataType.INT32, DataType.INT64]:
-                                    row[field.name] = [randint(-100, 100) for _ in range(length)]
-                                elif field.element_type in [DataType.FLOAT, DataType.DOUBLE]:
-                                    row[field.name] = [random() * 200 - 100 for _ in range(length)]
+                                if random() < 0.98:
+                                    length = min(10, field.max_capacity)
+                                    length = randint(0, length)
+                                else:
+                                    length = randint(0, field.max_capacity)
+                                if field.element_type == DataType.INT8:
+                                    row[field.name] = [randint(-2**7, 2**7 - 1) for _ in range(length)]
+                                elif field.element_type == DataType.INT16:
+                                    row[field.name] = [randint(-2**15, 2**15 - 1) for _ in range(length)]
+                                elif field.element_type == DataType.INT32:
+                                    row[field.name] = [randint(-2**31, 2**31 - 1) for _ in range(length)]
+                                elif field.element_type == DataType.INT64:
+                                    safe_max = 2**53 - 1  # Maximum safe integer in JavaScript/float64
+                                    safe_min = -(2**53 - 1)
+                                    row[field.name] = [randint(safe_min, safe_max) for _ in range(length)]
+                                elif field.element_type == DataType.FLOAT:
+                                    row[field.name] = []
+                                    for _ in range(length):
+                                        dist_type = choice(['uniform', 'normal', 'exp', 'special'])
+                                        if dist_type == 'uniform':
+                                            value = random() * 2e38 - 1e38
+                                        elif dist_type == 'normal':
+                                            value = float(np.random.normal(0, 1e37))
+                                        elif dist_type == 'exp':
+                                            value = float(np.random.exponential(1e37))
+                                        else:  # special values
+                                            value = choice([
+                                                3.4e38,  # Near max
+                                                -3.4e38,  # Near min
+                                                1.2e-38,  # Near zero positive
+                                                -1.2e-38,  # Near zero negative
+                                                0.0,
+                                                1.0,
+                                                -1.0
+                                            ])
+                                        row[field.name].append(value)
+                                elif field.element_type == DataType.DOUBLE:
+                                    row[field.name] = []
+                                    for _ in range(length):
+                                        dist_type = choice(['uniform', 'normal', 'exp', 'special'])
+                                        if dist_type == 'uniform':
+                                            value = random() * 2e308 - 1e308
+                                        elif dist_type == 'normal':
+                                            value = float(np.random.normal(0, 1e307))
+                                        elif dist_type == 'exp':
+                                            value = float(np.random.exponential(1e307))
+                                        else:  # special values
+                                            value = choice([
+                                                1.8e308,  # Near max
+                                                -1.8e308,  # Near min
+                                                2.2e-308,  # Near zero positive
+                                                -2.2e-308,  # Near zero negative
+                                                0.0,
+                                                1.0,
+                                                -1.0
+                                            ])
+                                        row[field.name].append(value)
                                 elif field.element_type in [DataType.STRING, DataType.VARCHAR]:
-                                    str_length = min(10, field.max_length) if field.max_length else 10
+                                    if field.max_length:
+                                        str_length = min(10, field.max_length)
+                                        if random() < 0.98:
+                                            str_length = int(np.random.uniform(0, str_length))
+                                        else:
+                                            str_length = randint(field.max_length // 2, field.max_length)
+                                    else:
+                                        str_length = 10
                                     row[field.name] = [''.join(choice(string.ascii_letters) for _ in range(str_length)) for _ in range(length)]
                             elif field.dtype in [DataType.FLOAT_VECTOR, DataType.FLOAT16_VECTOR, DataType.BFLOAT16_VECTOR]:
                                 dim = field.dim
                                 row[field.name] = list(np.random.randn(dim))
                             elif field.dtype == DataType.BINARY_VECTOR:
-                                dim = field.dim // 8  # Binary vectors are packed into bytes
-                                row[field.name] = [randint(0, 255) for _ in range(dim)]
+                                dim = field.dim  # Total number of bits
+                                # Generate a random list of 0s and 1s
+                                bool_list = [randint(0, 1) for _ in range(dim)]
+                                # Convert bool list to bytes and store directly
+                                row[field.name] = convert_bool_list_to_bytes(bool_list)
                             elif field.dtype == DataType.SPARSE_FLOAT_VECTOR:
-                                # Generate sparse vector with ~10% non-zero elements
-                                indices = sorted(np.random.choice(1000, size=100, replace=False))
-                                values = [random() * 2 - 1 for _ in range(len(indices))]
-                                row[field.name] = {"indices": indices, "values": values}
+                                # 直接生成字典格式的稀疏向量
+                                num_elements = randint(3, 10)  # 随机生成3-10个非零元素
+                                if field.dim is None:
+                                    dim = 10000
+                                else:
+                                    dim = field.dim
+                                indices = sorted(sample(list(range(1, dim+1)), num_elements))  # 随机生成不重复的索引并排序
+                                values = [round(random(), 3) for _ in range(num_elements)]  # 生成随机值
+                                sparse_vector = {"indices": indices, "values": values}
+                                row[field.name] = sparse_vector
+                                print(row[field.name])
                         data.append(row)
 
                     # Convert to DataFrame and write
@@ -1051,7 +1146,7 @@ dataset: {self.name}
                     logger.info(f"Write batch {batch_start//batch_size + 1} cost {time.time()-t0_write:.2f}s")
 
             logger.info(f"Generated {num_rows[split]} rows of data for split '{split}'")
-            
+
 
 def list_datasets() -> List[Dict[str, Union[str, Dict]]]:
     config = get_config()
@@ -1091,7 +1186,7 @@ def load_dataset(
         }
         dataset_dict = DatasetDict(datasets)
         if schema:
-            dataset_dict.train.set_schema(schema)
+            dataset_dict["train"].set_schema(schema)
         return dataset_dict
     elif isinstance(split, str):
         dataset = Dataset(name, split=split)
@@ -1102,7 +1197,7 @@ def load_dataset(
         datasets = {s: Dataset(name, split=s) for s in split}
         dataset_dict = DatasetDict(datasets)
         if schema:
-            dataset_dict.train.set_schema(schema)
+            dataset_dict["train"].set_schema(schema)
         return dataset_dict
     else:
         raise ValueError("split must be None, a string, or a list of strings")

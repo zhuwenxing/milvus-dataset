@@ -129,7 +129,7 @@ class NeighborsComputation:
 
         logger.info(f"Neighbor computation cost time: {time.time() - t0}")
 
-        result = np.empty(indices.shape, dtype=[(self.pk_field_name, "i8"), ("distance", "f8")])
+        result = np.empty(indices.shape, dtype=[(self.pk_field_name, "int64"), ("distance", "float64")])
         for i in range(indices.shape[0]):
             for j in range(indices.shape[1]):
                 result[i, j] = (train_idx[indices[i, j]], distances[i, j])
@@ -161,7 +161,7 @@ class NeighborsComputation:
             else:
                 neighbors_id = np.concatenate((neighbors_id, tmp_neighbors_id), axis=1)
         result = np.empty(
-            neighbors_id.shape, dtype=[(self.pk_field_name, "i8"), ("distance", "f8")]
+            neighbors_id.shape, dtype=[(self.pk_field_name, "int64"), ("distance", "float64")]
         )
         for index, _value in np.ndenumerate(neighbors_id):
             result[index] = (neighbors_id[index][0], neighbors_id[index][1])
@@ -182,6 +182,7 @@ class NeighborsComputation:
                 "distance": final_distance[:, : self.top_k].tolist(),
                 "metric": [self.metric_type for _ in range(len(test_idx))],
                 "query_expr": [self.query_expr for _ in range(len(test_idx))],
+                "vector_field_name": [self.vector_field_name for _ in range(len(test_idx))],
             }
         )
         logger.info(f"Writing neighbors to {final_file_name}")

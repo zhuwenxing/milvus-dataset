@@ -114,7 +114,8 @@ class DatasetWriter:
     ):
         self.mode = mode
         if verify_schema:
-            self.dataset._verify_schema(data)
+            logger.info("Validating data schema...")
+            self.dataset.validate_dataframe(data)
         if isinstance(data, pd.DataFrame):
             self._write_dataframe(data)
         elif isinstance(data, dict):

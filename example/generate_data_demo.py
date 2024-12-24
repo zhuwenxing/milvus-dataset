@@ -16,8 +16,6 @@ ConfigManager().init_storage(
 )
 
 
-
-
 id_field = FieldSchema("idx", DataType.INT64, is_primary=True)
 chunk_field = FieldSchema("chunk_id", DataType.VARCHAR, max_length=100)
 emb_field = FieldSchema("emb", DataType.FLOAT_VECTOR, dim=1024)
