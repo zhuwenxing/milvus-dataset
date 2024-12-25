@@ -969,6 +969,7 @@ dataset: {self.name}
         target_file_size_mb: int = 512,
         num_buffers: int = 15,
         queue_size: int = 30,
+        batch_size: int = 100_000,
     ) -> None:
         """Generate synthetic data based on the schema.
 
@@ -1017,7 +1018,7 @@ dataset: {self.name}
                 num_buffers=num_buffers,
                 queue_size=queue_size,
             ) as writer:
-                batch_size = min(split_num_rows, 10000)  # Process in batches to avoid memory issues
+                batch_size = min(split_num_rows, batch_size)  # Process in batches to avoid memory issues
                 for batch_start in range(0, split_num_rows, batch_size):
                     batch_end = min(batch_start + batch_size, split_num_rows)
                     batch_size_actual = batch_end - batch_start

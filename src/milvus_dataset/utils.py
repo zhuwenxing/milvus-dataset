@@ -50,7 +50,6 @@ def gen_sparse_vectors(nb, dim=1000):
 
 def gen_float_vectors(nb, dim):
     vectors = [[random.random() for _ in range(dim)] for _ in range(nb)]
-    vectors = preprocessing.normalize(vectors, axis=1, norm="l2")
     fp32_vectors = [np.array(x, dtype=np.dtype("float32")) for x in vectors]
     return fp32_vectors
 
