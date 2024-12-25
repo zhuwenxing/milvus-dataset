@@ -18,7 +18,7 @@ class StorageType(Enum):
 class StorageConfig(BaseModel):
     storage_type: StorageType
     root_path: str
-    options: Dict[str, Any]|None = None
+    options: Dict[str, Any] | None = None
 
 
 def _create_filesystem(storage_config: StorageConfig) -> AbstractFileSystem:

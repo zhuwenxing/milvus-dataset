@@ -1,26 +1,25 @@
 import json
-from math import log
 import os
 import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Optional, Union, Tuple
+from typing import Any, Dict, List, Optional, Union
 
 import fsspec
-from numpy import indices
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from pydantic import BaseModel
 from huggingface_hub import HfApi
+from ml_dtypes import bfloat16
+from pydantic import BaseModel
 from pymilvus import (
     BulkInsertState,
     Collection,
     CollectionSchema,
     DataType,
-    FieldSchema,
     MilvusClient,
     connections,
     utility,
@@ -30,6 +29,17 @@ from .log_config import logger
 from .neighbors import NeighborsComputation
 from .reader import DatasetReader
 from .storage import StorageConfig, StorageType, _create_filesystem, copy_data
+from .utils import (
+    create_index_for_all_vector_fields,
+    gen_row_data_by_schema,
+    get_bfloat16_vec_field_name_list,
+    get_binary_vec_field_name_list,
+    get_data_type_by_field_name,
+    get_dim_by_field_name,
+    get_float16_vec_field_name_list,
+    get_json_field_name_list,
+    get_sparse_vec_field_name_list,
+)
 from .writer import DatasetWriter
 
 
@@ -185,8 +195,7 @@ class Dataset:
             self._schema = self._load_schema()
         return self._schema
 
-
-    def create_schema_model(self):
+    def create_schema_model(self):  # noqa: C901
         """Create a PyArrow schema to validate the dataset's schema."""
         fields = []
         for schema in self._schema.fields:
@@ -211,20 +220,14 @@ class Dataset:
             elif schema.dtype == DataType.FLOAT_VECTOR:
                 pa_type = pa.list_(pa.float32(), schema.dim)
             elif schema.dtype == DataType.FLOAT16_VECTOR:
-                # float16向量使用uint8存储，每个float16值占用2字节，所以维度*2
-                pa_type = pa.binary(schema.dim*2)
+                pa_type = pa.list_(pa.uint8(), schema.dim * 2)
             elif schema.dtype == DataType.BFLOAT16_VECTOR:
-                # bfloat16向量也使用uint8存储，每个bfloat16值占用2字节，所以维度*2
-               pa_type = pa.binary(schema.dim*2)
+                pa_type = pa.list_(pa.uint8(), schema.dim * 2)
             elif schema.dtype == DataType.BINARY_VECTOR:
-                # binary向量使用bytes类型存储，每个值保存8位，所以维度//8 
-                pa_type = pa.binary(schema.dim//8)
+                pa_type = pa.list_(pa.uint8(), schema.dim // 8)
             elif schema.dtype == DataType.SPARSE_FLOAT_VECTOR:
                 # 使用struct类型存储稀疏向量
-                pa_type = pa.struct([   
-                    pa.field("indices", pa.list_(pa.int64())),
-                    pa.field("values", pa.list_(pa.float32()))
-                ])
+                pa_type = pa.string()
             elif schema.dtype == DataType.ARRAY:
                 element_type = schema.element_type
                 if element_type == DataType.BOOL:
@@ -246,8 +249,7 @@ class Dataset:
                 else:
                     raise ValueError(f"Unsupported array element type: {element_type}")
             elif schema.dtype == DataType.JSON:
-                # Use PyArrow's struct type for JSON objects
-                pa_type = pa.struct([])  # Empty struct allows any JSON structure
+                pa_type = pa.string()  # JSON objects are stored as strings
             else:
                 raise ValueError(f"Unsupported data type: {schema.dtype}")
             fields.append(pa.field(schema.name, pa_type))
@@ -255,21 +257,98 @@ class Dataset:
         arrow_schema = pa.schema(fields)
         return arrow_schema
 
-    def validate_dataframe(self, values):
-        """Validate data using PyArrow schema and additional constraints."""
+    def format_data(self, data): #noqa
+        schema = self._schema
+        binary_vector_field_names = get_binary_vec_field_name_list(schema)
+        sparse_vector_field_names = get_sparse_vec_field_name_list(schema)
+        float16_vector_field_names = get_float16_vec_field_name_list(schema)
+        bfloat16_vector_field_names = get_bfloat16_vec_field_name_list(schema)
+        json_fields = get_json_field_name_list(schema)
+        for field in binary_vector_field_names:
+
+            def covert_binary(x):
+                if isinstance(x, np.ndarray) and x.dtype == np.uint8:
+                    return x
+                else:
+                    return np.array(np.packbits(x, axis=-1), dtype=np.uint8)
+
+            data[field] = data[field].apply(lambda x: covert_binary(x))
+        for field in sparse_vector_field_names:
+
+            def convert_sparse(x):
+                if isinstance(x, str):
+                    return x
+                elif isinstance(x, dict) and "indices" in x and "values" in x:
+                    x = dict(zip(x["indices"], x["values"]))
+                    return json.dumps(x)
+                elif isinstance(x, dict) and not ("indices" in x and "values" in x):
+                    return json.dumps(x)
+                else:
+                    raise ValueError(
+                        f"Unsupported sparse vector format {type(x)}, only coo and dok format supported"
+                    )
+
+            data[field] = data[field].apply(lambda x: convert_sparse(x))
+        for field in float16_vector_field_names:
+
+            def convert_float16(x):
+                if isinstance(x, np.ndarray) and x.dtype == np.uint8:
+                    return x
+                else:
+                    return np.array(
+                        np.array(x, dtype=np.float16).view(np.uint8).tolist(),
+                        dtype=np.dtype("uint8"),
+                    )
+
+            data[field] = data[field].apply(lambda x: convert_float16(x))
+        for field in bfloat16_vector_field_names:
+
+            def convert_bfloat16(x):
+                if isinstance(x, np.ndarray) and x.dtype == np.uint8:
+                    return x
+                else:
+                    return np.array(
+                        np.array(x, dtype=bfloat16).view(np.uint8).tolist(),
+                        dtype=np.dtype("uint8"),
+                    )
+
+            data[field] = data[field].apply(lambda x: convert_bfloat16(x))
+        for field in json_fields:
+
+            def convert_json(x):
+                if isinstance(x, dict):
+                    return json.dumps(x)
+                elif isinstance(x, list):
+                    return [json.dumps(d) for d in x]
+                elif isinstance(x, str):
+                    return x
+                else:
+                    raise ValueError(f"Unsupported json field format: {type(x)}")
+
+            data[field] = data[field].apply(lambda x: convert_json(x))
+
+        return data
+
+    def verify_schema(self, values):
+        """Validate data using PyArrow schema"""
         if isinstance(values, pd.DataFrame):
             try:
+                # format the binary/f16/bf16/sparse vector, json data
                 # Validate basic types
+                values = self.format_data(values)
                 table = pa.Table.from_pandas(values, schema=self.create_schema_model())
-                return values
+                logger.info(f"Data validation passed {table}")
+                df = table.to_pandas()
+                logger.info(f"Data validation passed \n{df}")
+                return df
             except pa.ArrowInvalid as e:
-                raise ValueError(f"Data validation failed: {str(e)}")
+                raise ValueError(f"Data validation failed: {e!s}") from e
         elif isinstance(values, (dict, list)):
             try:
                 df = pd.DataFrame(values)
-                return self.validate_dataframe(df)
+                return self.verify_schema(df)
             except (pa.ArrowInvalid, ValueError) as e:
-                raise ValueError(f"Data validation failed: {str(e)}")
+                raise ValueError(f"Data validation failed: {e!s}") from e
         else:
             raise ValueError(f"Unsupported data type: {type(values)}")
 
@@ -477,7 +556,7 @@ class DatasetMetadata(BaseModel):
     )
 
     @classmethod
-    def from_dataset_dict(cls, dataset_dict: 'DatasetDict'):
+    def from_dataset_dict(cls, dataset_dict: "DatasetDict"):
         """Create metadata from a DatasetDict instance"""
         metadata = cls(
             name=dataset_dict.name,
@@ -516,10 +595,9 @@ class DatasetDict(dict):
         Raises:
             Exception: If there is an error copying the dataset directory
         """
-        from .storage import copy_data
 
         # Get source dataset directory and storage config from train split
-        source_storage = self.datasets['train'].storage
+        source_storage = self.datasets["train"].storage
         source_path = os.path.join(source_storage.root_path, self.name)
         dest_path = os.path.join(destination.root_path, self.name)
 
@@ -529,7 +607,7 @@ class DatasetDict(dict):
                 source_config=source_storage,
                 dest_config=destination,
                 source_path=source_path,
-                dest_path=dest_path
+                dest_path=dest_path,
             )
 
             for src, dst, status in results:
@@ -538,7 +616,9 @@ class DatasetDict(dict):
                 else:
                     logger.warning(f"Issue copying {src} to {dst}: {status}")
 
-            logger.info(f"Dataset '{self.name}' has been successfully saved to {destination.root_path}")
+            logger.info(
+                f"Dataset '{self.name}' has been successfully saved to {destination.root_path}"
+            )
         except Exception as e:
             error_msg = f"Failed to copy dataset directory: {e!s}"
             logger.error(error_msg)
@@ -547,7 +627,6 @@ class DatasetDict(dict):
     def get_metadata(self):
         self._load_metadata()
         return self.meta
-
 
     def set_metadata(self, metadata: Union[DatasetMetadata, Dict[str, Any]]):
         """Set metadata for the dataset and save it to metadata.json
@@ -559,14 +638,11 @@ class DatasetDict(dict):
             # If current metadata doesn't exist, create a new one
             if self.meta is None:
                 current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S%z")
-                self.meta = DatasetMetadata(
-                    created_at=current_time,
-                    updated_at=current_time
-                )
+                self.meta = DatasetMetadata(created_at=current_time, updated_at=current_time)
 
             # Update only the provided fields
             for key, value in metadata.items():
-                if hasattr(self.meta, key) and key not in ['created_at', 'updated_at']:
+                if hasattr(self.meta, key) and key not in ["created_at", "updated_at"]:
                     setattr(self.meta, key, value)
         else:
             # Preserve existing timestamps if they exist
@@ -585,7 +661,7 @@ class DatasetDict(dict):
             with self.datasets["train"].fs.open(file_path, "r") as f:
                 metadata_dict = json.load(f)
                 self.meta = DatasetMetadata(**metadata_dict)
-        except:
+        except Exception:
             # Only initialize timestamps when metadata.json doesn't exist
             current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S%z")
             self.meta = DatasetMetadata.from_dataset_dict(self)
@@ -743,7 +819,9 @@ dataset: {self.name}
             dataset.set_schema(schema)
         logger.info(f"Schema set for dataset '{self.name}' and all its splits")
 
-    def to_milvus(self, milvus_config: Dict, mode="insert", milvus_storage=None):
+    def to_milvus(
+        self, milvus_config: Dict, collection_name=None, mode="import", milvus_storage=None
+    ):
         """
         Write the dataset to Milvus. Can be either 'insert' or 'bulk import'.
         Requires the Milvus connection information, which can be passed as a Milvus client.
@@ -759,72 +837,69 @@ dataset: {self.name}
         # Create collection
         milvus_client = MilvusClient(**milvus_config)
         connections.connect(**milvus_config)
+        if collection_name is None:
+            collection_name = self.name
+        if milvus_client.has_collection(collection_name):
+            logger.info(f"Collection '{collection_name}' already exists in Milvus, drop it first")
+            milvus_client.drop_collection(collection_name)
+
         milvus_client.create_collection(
-            collection_name=self.name,
+            collection_name=collection_name,
             schema=self["train"].get_schema(),
         )
-        print(milvus_client.list_collections())
-        # get sparse vector field name
-        sparse_vector_field_names = []
-        for field in self["train"].get_schema().fields:
-            if field.dtype == DataType.SPARSE_FLOAT_VECTOR:
-                sparse_vector_field_names.append(field.name)
-        if mode == "insert":
-            for data in self["train"].read():
-                for column in sparse_vector_field_names:
-                    tmp_data = data[column].to_list()
-                    data[column] = [
-                        {str(idx): str(val) for idx, val in zip(item['indices'], item['values'])}
-                        for item in tmp_data
-                    ]
-                data = data.to_dict("records")
-                logger.info(data[0])
+        # Sync data to Milvus storage
+        self.to_storage(milvus_storage)
+        # List all files in train split
+        # Create fs by Milvus storage
+        _fs = _create_filesystem(milvus_storage)
+        train_fs = self.datasets["train"].fs
+        train_files = train_fs.glob(
+            f"{self.datasets['train'].root_path}/{self.name}/train/*.parquet"
+        )
+        file_names = [file.split("/")[-1] for file in train_files]
+        bulk_insert_files = [
+            f"{milvus_storage.root_path}/{self.name}/train/{file}" for file in file_names
+        ]
 
-                milvus_client.insert(collection_name=self.name, data=data)
-        elif mode == "import":
-            # Use save to method to save the dataset to Milvus storage
-            # Sync data to Milvus storage
-            self.to_storage(milvus_storage)
-            # List all files in train split
-            # Create fs by Milvus storage
-            milvus_fs = _create_filesystem(milvus_storage)
-            train_files = milvus_fs.glob(f"{milvus_storage.root_path}/{self.name}/train/*.parquet")
-            # Restful API to import data
-            task_ids = []
-            for file in train_files:
-                file = "/".join(file.split("/")[1:])
-                logger.info(f"Importing file {file} to Milvus")
-                task_id = utility.do_bulk_insert(
-                    collection_name=self.name,
-                    files=[file],
-                )
-                task_ids.append(task_id)
-                logger.info(f"Create a bulk inert task, task id: {task_id}")
-            # List all import task and wait complete
-            while len(task_ids) > 0:
-                logger.info("Wait 1 second to check bulk insert tasks state...")
-                time.sleep(1)
-                for id in task_ids:
-                    state = utility.get_bulk_insert_state(task_id=id)
-                    if (
-                        state.state == BulkInsertState.ImportFailed
-                        or state.state == BulkInsertState.ImportFailedAndCleaned
-                    ):
-                        logger.info(
-                            f"The task {state.task_id} failed, reason: {state.failed_reason}"
-                        )
-                        task_ids.remove(id)
-                    elif state.state == BulkInsertState.ImportCompleted:
-                        logger.info(f"The task {state.task_id} completed with state {state}")
-                        task_ids.remove(id)
-        else:
-            raise ValueError("mode must be 'insert' or 'import'")
+        # TODO: Restful API to import data
+        task_ids = []
+        for file in bulk_insert_files:
+            file = "/".join(file.split("/")[1:])
+            logger.info(f"Importing file {file} to Milvus")
+            task_id = utility.do_bulk_insert(
+                collection_name=collection_name,
+                files=[file],
+            )
+            task_ids.append(task_id)
+            logger.info(f"Create a bulk inert task, task id: {task_id}")
+        # List all import task and wait complete
+        while len(task_ids) > 0:
+            logger.info("Wait 1 second to check bulk insert tasks state...")
+            time.sleep(1)
+            for id in task_ids:
+                state = utility.get_bulk_insert_state(task_id=id)
+                if (
+                    state.state == BulkInsertState.ImportFailed
+                    or state.state == BulkInsertState.ImportFailedAndCleaned
+                ):
+                    logger.error(f"The task {state.task_id} failed, reason: {state.failed_reason}")
+                    raise ValueError(
+                        f"The task {state.task_id} failed, reason: {state.failed_reason}"
+                    )
+                elif state.state == BulkInsertState.ImportCompleted:
+                    logger.info(f"The task {state.task_id} completed with state {state}")
+                    task_ids.remove(id)
 
         logger.info(f"Dataset '{self.name}' has been successfully written to Milvus")
         c = Collection(self.name)
         c.flush()
         logger.info(f"collection schema {c.schema}")
         logger.info(f"collection num entities {c.num_entities}")
+        create_index_for_all_vector_fields(c)
+        c.load()
+        logger.info("collection loaded")
+        count = c.query(expr="", output_fields=["count(*)"])
+        logger.info(f"collection count {count}")
 
     def to_hf(
         self,
@@ -844,7 +919,7 @@ dataset: {self.name}
         local_path = f"{self.storage.root_path}/{self.name}"
         if self.storage.type != StorageType.LOCAL:
             logger.info("Downloading dataset to local storage")
-            self.save(StorageConfig(type=StorageType.LOCAL, root_path=local_path))
+            self.to_storage(StorageConfig(type=StorageType.LOCAL, root_path=local_path))
         api = HfApi()
 
         # if storage is s3, download to local
@@ -889,11 +964,11 @@ dataset: {self.name}
 
     def generate_data(
         self,
-        num_rows: Union[int, Dict[str, int]] = None,
-        splits: Optional[List[str]] = None,
+        num_rows: Union[int, Dict[str, int], None] = None,
+        splits: Optional[List[str]] | None = None,
         target_file_size_mb: int = 512,
         num_buffers: int = 15,
-        queue_size: int = 30
+        queue_size: int = 30,
     ) -> None:
         """Generate synthetic data based on the schema.
 
@@ -908,16 +983,13 @@ dataset: {self.name}
             num_buffers (int, optional): Number of buffers for writing. Defaults to 15.
             queue_size (int, optional): Size of the writer queue. Defaults to 30.
         """
-        import numpy as np
-        from random import randint, random, choice
-        import string
+
         import pandas as pd
-        from random import sample
 
         if splits is None:
             splits = ["train", "test"]
         if num_rows is None:
-            num_rows = {"train": 1000, "test": 200}
+            num_rows = {"train": 3000, "test": 200}
         # Convert num_rows to dictionary if it's an integer
         if isinstance(num_rows, int):
             num_rows = {split: num_rows for split in splits}
@@ -925,19 +997,9 @@ dataset: {self.name}
             # Ensure all requested splits have a row count
             for split in splits:
                 if split not in num_rows:
-                    raise ValueError(f"No row count specified for split '{split}' in num_rows dictionary")
-
-        def convert_bool_list_to_bytes(bool_list):
-            if len(bool_list) % 8 != 0:
-                raise ValueError("The length of a boolean list must be a multiple of 8")
-
-            byte_array = bytearray(len(bool_list) // 8)
-            for i, bit in enumerate(bool_list):
-                if bit == 1:
-                    index = i // 8
-                    shift = i % 8
-                    byte_array[index] |= (1 << shift)
-            return bytes(byte_array)
+                    raise ValueError(
+                        f"No row count specified for split '{split}' in num_rows dictionary"
+                    )
 
         for split in splits:
             dataset = self.datasets[split]
@@ -953,197 +1015,23 @@ dataset: {self.name}
                 mode="overwrite",
                 target_file_size_mb=target_file_size_mb,
                 num_buffers=num_buffers,
-                queue_size=queue_size
+                queue_size=queue_size,
             ) as writer:
                 batch_size = min(split_num_rows, 10000)  # Process in batches to avoid memory issues
                 for batch_start in range(0, split_num_rows, batch_size):
                     batch_end = min(batch_start + batch_size, split_num_rows)
                     batch_size_actual = batch_end - batch_start
-
-                    data = []
-                    for i in range(batch_size_actual):
-                        row = {}
-                        for field in schema.fields:
-                            if field.dtype == DataType.INT8:
-                                row[field.name] = randint(-128, 127)
-                            elif field.dtype == DataType.INT16:
-                                row[field.name] = randint(-2**15, 2**15 - 1)
-                            elif field.dtype == DataType.INT32:
-                                row[field.name] = randint(-2**31, 2**31 - 1)
-                            elif field.dtype == DataType.INT64:
-                                safe_max = 2**53 - 1  # Maximum safe integer in JavaScript/float64
-                                safe_min = -(2**53 - 1)
-                                row[field.name] = randint(safe_min, safe_max)
-                            elif field.dtype == DataType.FLOAT:
-                                # Generate float32 values with different ranges and distributions
-                                dist_type = choice(['uniform', 'normal', 'exp', 'special'])
-                                if dist_type == 'uniform':
-                                    row[field.name] = random() * 1000 - 500  # Reasonable float32 range
-                                elif dist_type == 'normal':
-                                    row[field.name] = float(np.random.normal(0, 100))
-                                elif dist_type == 'exp':
-                                    row[field.name] = float(np.random.exponential(10))
-                                else:  # special values
-                                    row[field.name] = choice([
-                                        1.0,
-                                        -1.0,
-                                        0.0
-                                    ])
-                            elif field.dtype == DataType.DOUBLE:
-                                # Generate float64 values with different ranges and distributions
-                                dist_type = choice(['uniform', 'normal', 'exp', 'special'])
-                                if dist_type == 'uniform':
-                                    row[field.name] = random() * 10000 - 5000  # Reasonable float64 range
-                                elif dist_type == 'normal':
-                                    row[field.name] = float(np.random.normal(0, 1000))
-                                elif dist_type == 'exp':
-                                    row[field.name] = float(np.random.exponential(100))
-                                else:  # special values
-                                    row[field.name] = choice([
-                                        1.0,
-                                        -1.0,
-                                        0.0
-                                    ])
-                            elif field.dtype in [DataType.STRING, DataType.VARCHAR]:
-                                if field.max_length:
-                                    str_length = min(10, field.max_length)
-                                    if random() < 0.98:
-                                        str_length = int(np.random.uniform(0, str_length))
-                                    else:
-                                        str_length = randint(field.max_length // 2, field.max_length)
-                                else:
-                                    str_length = 10
-                                row[field.name] = ''.join(choice(string.ascii_letters) for _ in range(str_length))
-                            elif field.dtype == DataType.BOOL:
-                                row[field.name] = choice([True, False])
-                            elif field.dtype == DataType.JSON:
-                                json_types = ['simple', 'array', 'nested']
-                                json_type = choice(json_types)
-
-                                if json_type == 'simple':
-                                    row[field.name] = {
-                                        "id": randint(1, 1000),
-                                        "value": random() * 100,
-                                        "active": choice([True, False]),
-                                        "name": ''.join(choice(string.ascii_letters) for _ in range(8))
-                                    }
-                                elif json_type == 'array':
-                                    row[field.name] = {
-                                        "tags": [''.join(choice(string.ascii_letters) for _ in range(5)) for _ in range(randint(1, 5))],
-                                        "scores": [random() * 100 for _ in range(randint(1, 3))],
-                                        "flags": [choice([True, False]) for _ in range(randint(1, 3))]
-                                    }
-                                else:  # nested
-                                    row[field.name] = {
-                                        "user": {
-                                            "id": randint(1, 1000),
-                                            "name": ''.join(choice(string.ascii_letters) for _ in range(8)),
-                                            "settings": {
-                                                "theme": choice(["light", "dark"]),
-                                                "notifications": choice([True, False])
-                                            }
-                                        },
-                                        "metadata": {
-                                            "created_at": time.time(),
-                                            "version": f"{randint(1, 5)}.{randint(0, 9)}"
-                                        }
-                                    }
-                            elif field.dtype == DataType.ARRAY:
-                                if random() < 0.98:
-                                    length = min(10, field.max_capacity)
-                                    length = randint(0, length)
-                                else:
-                                    length = randint(0, field.max_capacity)
-                                if field.element_type == DataType.INT8:
-                                    row[field.name] = [randint(-2**7, 2**7 - 1) for _ in range(length)]
-                                elif field.element_type == DataType.INT16:
-                                    row[field.name] = [randint(-2**15, 2**15 - 1) for _ in range(length)]
-                                elif field.element_type == DataType.INT32:
-                                    row[field.name] = [randint(-2**31, 2**31 - 1) for _ in range(length)]
-                                elif field.element_type == DataType.INT64:
-                                    safe_max = 2**53 - 1  # Maximum safe integer in JavaScript/float64
-                                    safe_min = -(2**53 - 1)
-                                    row[field.name] = [randint(safe_min, safe_max) for _ in range(length)]
-                                elif field.element_type == DataType.FLOAT:
-                                    row[field.name] = []
-                                    for _ in range(length):
-                                        dist_type = choice(['uniform', 'normal', 'exp', 'special'])
-                                        if dist_type == 'uniform':
-                                            value = random() * 2e38 - 1e38
-                                        elif dist_type == 'normal':
-                                            value = float(np.random.normal(0, 1e37))
-                                        elif dist_type == 'exp':
-                                            value = float(np.random.exponential(1e37))
-                                        else:  # special values
-                                            value = choice([
-                                                3.4e38,  # Near max
-                                                -3.4e38,  # Near min
-                                                1.2e-38,  # Near zero positive
-                                                -1.2e-38,  # Near zero negative
-                                                0.0,
-                                                1.0,
-                                                -1.0
-                                            ])
-                                        row[field.name].append(value)
-                                elif field.element_type == DataType.DOUBLE:
-                                    row[field.name] = []
-                                    for _ in range(length):
-                                        dist_type = choice(['uniform', 'normal', 'exp', 'special'])
-                                        if dist_type == 'uniform':
-                                            value = random() * 2e308 - 1e308
-                                        elif dist_type == 'normal':
-                                            value = float(np.random.normal(0, 1e307))
-                                        elif dist_type == 'exp':
-                                            value = float(np.random.exponential(1e307))
-                                        else:  # special values
-                                            value = choice([
-                                                1.8e308,  # Near max
-                                                -1.8e308,  # Near min
-                                                2.2e-308,  # Near zero positive
-                                                -2.2e-308,  # Near zero negative
-                                                0.0,
-                                                1.0,
-                                                -1.0
-                                            ])
-                                        row[field.name].append(value)
-                                elif field.element_type in [DataType.STRING, DataType.VARCHAR]:
-                                    if field.max_length:
-                                        str_length = min(10, field.max_length)
-                                        if random() < 0.98:
-                                            str_length = int(np.random.uniform(0, str_length))
-                                        else:
-                                            str_length = randint(field.max_length // 2, field.max_length)
-                                    else:
-                                        str_length = 10
-                                    row[field.name] = [''.join(choice(string.ascii_letters) for _ in range(str_length)) for _ in range(length)]
-                            elif field.dtype in [DataType.FLOAT_VECTOR, DataType.FLOAT16_VECTOR, DataType.BFLOAT16_VECTOR]:
-                                dim = field.dim
-                                row[field.name] = list(np.random.randn(dim))
-                            elif field.dtype == DataType.BINARY_VECTOR:
-                                dim = field.dim  # Total number of bits
-                                # Generate a random list of 0s and 1s
-                                bool_list = [randint(0, 1) for _ in range(dim)]
-                                # Convert bool list to bytes and store directly
-                                row[field.name] = convert_bool_list_to_bytes(bool_list)
-                            elif field.dtype == DataType.SPARSE_FLOAT_VECTOR:
-                                # 直接生成字典格式的稀疏向量
-                                num_elements = randint(3, 10)  # 随机生成3-10个非零元素
-                                if field.dim is None:
-                                    dim = 10000
-                                else:
-                                    dim = field.dim
-                                indices = sorted(sample(list(range(1, dim+1)), num_elements))  # 随机生成不重复的索引并排序
-                                values = [round(random(), 3) for _ in range(num_elements)]  # 生成随机值
-                                sparse_vector = {"indices": indices, "values": values}
-                                row[field.name] = sparse_vector
-                                print(row[field.name])
-                        data.append(row)
-
+                    data = gen_row_data_by_schema(
+                        schema=schema, nb=batch_size_actual, start=batch_start
+                    )
                     # Convert to DataFrame and write
                     df = pd.DataFrame(data)
                     t0_write = time.time()
+                    logger.info(f"write df: \n{df}")
                     writer.write(df, verify_schema=True)
-                    logger.info(f"Write batch {batch_start//batch_size + 1} cost {time.time()-t0_write:.2f}s")
+                    logger.info(
+                        f"Write batch {batch_start//batch_size + 1} cost {time.time()-t0_write:.2f}s"
+                    )
 
             logger.info(f"Generated {num_rows[split]} rows of data for split '{split}'")
 

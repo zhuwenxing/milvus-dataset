@@ -1,14 +1,14 @@
-from math import log
+import json
 import os
 import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from queue import Queue
 from typing import Dict, List, Union
-import json
+
 import pandas as pd
-from datetime import datetime, timezone
 
 from .log_config import logger
 
@@ -42,7 +42,7 @@ class DatasetWriter:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self._flush_all_buffers()
         self._stop_write_threads()
-        
+
         # Update metadata timestamp if it exists
         metadata_file = f"{self.dataset.root_path}/{self.dataset.name}/metadata.json"
         if self.dataset.fs.exists(metadata_file):
@@ -113,9 +113,8 @@ class DatasetWriter:
         verify_schema: bool = True,
     ):
         self.mode = mode
-        if verify_schema:
-            logger.info("Validating data schema...")
-            self.dataset.validate_dataframe(data)
+        logger.info("Validating data schema...")
+        self.dataset.verify_schema(data)
         if isinstance(data, pd.DataFrame):
             self._write_dataframe(data)
         elif isinstance(data, dict):

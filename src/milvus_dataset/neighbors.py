@@ -129,7 +129,9 @@ class NeighborsComputation:
 
         logger.info(f"Neighbor computation cost time: {time.time() - t0}")
 
-        result = np.empty(indices.shape, dtype=[(self.pk_field_name, "int64"), ("distance", "float64")])
+        result = np.empty(
+            indices.shape, dtype=[(self.pk_field_name, "int64"), ("distance", "float64")]
+        )
         for i in range(indices.shape[0]):
             for j in range(indices.shape[1]):
                 result[i, j] = (train_idx[indices[i, j]], distances[i, j])

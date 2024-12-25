@@ -307,6 +307,65 @@ def get_float_vec_field_name_list(schema=None):
     return vec_fields
 
 
+def get_float16_vec_field_name_list(schema=None):
+    vec_fields = []
+    if schema is None:
+        raise Exception("schema is None")
+    fields = schema.fields
+    for field in fields:
+        if field.dtype == DataType.FLOAT16_VECTOR:
+            vec_fields.append(field.name)
+    return vec_fields
+
+
+def get_bfloat16_vec_field_name_list(schema=None):
+    vec_fields = []
+    if schema is None:
+        raise Exception("schema is None")
+    fields = schema.fields
+    for field in fields:
+        if field.dtype == DataType.BFLOAT16_VECTOR:
+            vec_fields.append(field.name)
+    return vec_fields
+
+
+def get_data_type_by_field_name(schema=None, field_name=None):
+    if schema is None:
+        raise Exception("schema is None")
+    if field_name is None:
+        raise Exception("field_name is None")
+    fields = schema.fields
+    for field in fields:
+        if field.name == field_name:
+            return field.dtype
+    return None
+
+
+def get_dim_by_field_name(schema=None, field_name=None):
+    if schema is None:
+        raise Exception("schema is None")
+    if field_name is None:
+        raise Exception("field_name is None")
+    fields = schema.fields
+    for field in fields:
+        if field.name == field_name:
+            return field.params["dim"]
+    return None
+
+
+def get_json_field_name_list(schema=None):
+    json_fields = []
+    if schema is None:
+        raise Exception("schema is None")
+    fields = schema.fields
+    for field in fields:
+        if field.dtype == DataType.JSON or (
+            field.dtype == DataType.ARRAY and field.element_type == DataType.JSON
+        ):
+            json_fields.append(field.name)
+    return json_fields
+
+
 def get_binary_vec_field_name_list(schema=None):
     vec_fields = []
     if schema is None:

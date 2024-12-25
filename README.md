@@ -1,100 +1,192 @@
 # Milvus Dataset
 
-Milvus Dataset is a Python library designed for efficient management and processing of large-scale datasets, specifically tailored for integration with Milvus vector database. It provides a simple yet powerful interface for creating, writing, reading, and managing datasets, particularly suited for handling large-scale vector data.
+Milvus Dataset is a versatile Python library for efficient management and processing of large-scale datasets. While optimized for seamless integration with Milvus vector database, it also serves as a powerful standalone dataset management tool. The library provides a simple yet powerful interface for creating, writing, reading, and managing datasets, particularly excelling in handling large-scale vector data and general-purpose data management tasks.
 
 ## Key Features
 
-- **Intelligent File Splitting**: Automatically splits large datasets into appropriately sized files, optimizing storage and query efficiency.
-- **Flexible Data Format Support**: Supports various data formats including pandas DataFrame, PyArrow Table, dictionaries, and lists of dictionaries.
-- **Efficient Data Writing**: Utilizes Dask for parallelized data writing, significantly enhancing large-scale data processing speed.
-- **Dynamic File Size Adjustment**: Automatically adjusts file sizes to ensure optimal storage and query performance.
-- **Seamless Milvus Integration**: Designed specifically for Milvus vector database, supporting efficient vector data management and querying.
-- **Multiple Reading Modes**: Supports streaming, batch, and full data reading, adapting to different use cases.
-- **Data Validation**: Offers optional schema validation for training datasets, ensuring data quality.
+1. **Flexible Storage Support**
+   - Local storage support
+   - Object storage support (S3/MinIO)
+   - Easy migration between different storage types
+
+2. **Rich Data Type Support**
+   - Basic data types (INT64, VARCHAR, etc.)
+   - Vector data types (FLOAT_VECTOR)
+   - JSON fields
+   - Sparse vectors
+   - Binary vectors
+
+3. **Dataset Management**
+   - Training and test set split support
+   - Dataset metadata management
+   - Dataset statistics and analytics
+   - Schema definition and validation
+
+4. **Integration Capabilities**
+   - Import to Milvus database
+   - Upload to Hugging Face Hub
+   - Seamless pandas DataFrame integration
+   - Built-in nearest neighbor computation
+   - Built-in mock data generation
 
 ## Installation
-
-Install Milvus Dataset using pip:
 
 ```bash
 pip install milvus-dataset
 ```
 
-## Quick Start
+## Quick Start Guide
 
-Here's a simple usage example:
+### 1. Basic Configuration
 
 ```python
-from milvus_dataset import Dataset, configure_logger
+from milvus_dataset import ConfigManager, StorageType
 
-# Configure logging level
-configure_logger(level="INFO")
+# Initialize local storage
+ConfigManager().init_storage(
+    root_path="./data/my-dataset",
+    storage_type=StorageType.LOCAL,
+)
 
-# Initialize the dataset
-dataset = Dataset("my_dataset", root_path="/path/to/data")
-
-# Write data
-data = {...}  # Your data, can be a DataFrame, dictionary, etc.
-dataset.write(data, mode='append')
-
-# Read data
-train_data = dataset.read(split='train')
+# Initialize S3 storage
+ConfigManager().init_storage(
+    root_path="s3://bucket/path",
+    storage_type=StorageType.S3,
+    options={
+        "aws_access_key_id": "your_key",
+        "aws_secret_access_key": "your_secret",
+        "endpoint_url": "your_endpoint"  # Optional, for MinIO
+    }
+)
 ```
 
-## Detailed Usage
-
-### Writing Data
+### 2. Creating a Dataset
 
 ```python
-# Use DatasetWriter for more granular control
-from milvus_dataset import DatasetWriter
+from pymilvus import CollectionSchema, DataType, FieldSchema
+from milvus_dataset import load_dataset
 
-writer = DatasetWriter(dataset, target_file_size_mb=5)
-writer.write(data, mode='append')
+# Define Schema
+schema = CollectionSchema(
+    fields=[
+        FieldSchema("id", DataType.INT64, is_primary=True),
+        FieldSchema("text", DataType.VARCHAR, max_length=65535),
+        FieldSchema("embedding", DataType.FLOAT_VECTOR, dim=1024)
+    ],
+    description="Text vector dataset"
+)
+
+# Load dataset
+dataset = load_dataset("my-dataset", schema=schema)
 ```
 
-### Reading Data
+### 3. Writing Data
 
 ```python
-# Full read
-full_data = dataset.read(mode='full')
+import pandas as pd
+import numpy as np
 
-# Stream read
-for batch in dataset.read(mode='stream'):
-    process_batch(batch)
-
-# Batch read
-for batch in dataset.read(mode='batch', batch_size=1000):
-    process_batch(batch)
-```
-
-### Schema Validation
-
-```python
-# Set schema for training data
-dataset.set_schema({
-    "id": (int, ...),
-    "vector": ([float], 128),  # 128-dimensional vector
-    "label": (str, ...)
+# Prepare data
+df = pd.DataFrame({
+    "id": range(1000),
+    "text": ["text_" + str(i) for i in range(1000)],
+    "embedding": [np.random.rand(1024) for _ in range(1000)]
 })
+
+# Write to training set
+with dataset["train"].get_writer(mode="append") as writer:
+    writer.write(df)
 ```
 
-## Configuration
+### 4. Dataset Operations
 
-Milvus Dataset can be configured through environment variables or a configuration file. Key configuration items include:
+```python
+# View dataset information
+print(dataset.summary())
 
-- `MILVUS_DATASET_ROOT`: Root directory for datasets
-- `MILVUS_DATASET_LOG_LEVEL`: Logging level
+# Compute neighbors
+dataset.compute_neighbors(
+    vector_field_name="embedding",
+    pk_field_name="id",
+    top_k=100
+)
+
+# import to Milvus
+dataset.to_milvus(
+    milvus_config={
+        "host": "localhost",
+        "port": 19530
+    },
+    milvus_storage=StorageConfig(
+        root_path="s3://bucket/path",
+        storage_type=StorageType.S3,
+        options={
+            "aws_access_key_id": "your_key",
+            "aws_secret_access_key": "your_secret",
+            "endpoint_url": "your_endpoint"  # Optional, for MinIO
+        }
+    )
+
+)
+
+# Upload to Hugging Face
+dataset.to_hf(repo_name="username/dataset-name")
+```
+
+## Advanced Usage
+
+### Performance Optimization
+
+1. **File Size Configuration**
+   ```python
+   with dataset["train"].get_writer(
+       mode="append",
+       target_file_size_mb=512,  # Adjust file size
+       num_buffers=15,           # Adjust buffer number
+       queue_size=30             # Adjust queue size
+   ) as writer:
+       writer.write(df)
+   ```
+
+2. **Batch Processing**
+   ```python
+   # Read in batches
+   for batch in dataset["train"].read(mode="batch", batch_size=1000):
+       process_batch(batch)
+   ```
+
+### Storage Migration
+
+```python
+# Move data from local to S3
+dataset.to_storage(StorageConfig(
+    storage_type=StorageType.S3,
+    root_path="s3://bucket/path",
+    options={...}
+))
+```
+
+## Common Issues and Solutions
+
+1. **Storage Type Selection**
+   - Use local storage for development and testing
+   - Use object storage for production environments
+
+2. **Handling Large-Scale Data**
+   - Use batch writing
+   - Set appropriate buffer size and queue size
+   - Consider parallel processing
+
+3. **Ensuring Data Quality**
+   - Define comprehensive schema
+   - Enable schema validation
+   - Regularly check dataset statistics
+
+4. **Performance Optimization Tips**
+   - Set reasonable file size (target_file_size_mb)
+   - Adjust buffer parameters (num_buffers, queue_size)
+   - Process data in batches instead of one by one
 
 ## Contributing
 
-We welcome contributions of all forms! If you find a bug or have a feature suggestion, please create an issue. If you'd like to contribute code, please submit a pull request.
-
-## License
-
-Milvus Dataset is licensed under the [Apache 2.0 License](LICENSE).
-
-## Contact Us
-
-If you have any questions or suggestions, please contact us through [GitHub Issues](https://github.com/your-repo/milvus-dataset/issues).
-
+We welcome contributions! Please feel free to submit a Pull Request.
