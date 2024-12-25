@@ -72,7 +72,7 @@ class NeighborsComputation:
         self.metric_type = metric_type
         self.max_rows_per_epoch = max_rows_per_epoch
         self.neighbors = self.dataset_dict["neighbors"]
-        self.file_name = f"{self.neighbors.root_path}/{self.neighbors.name}/{self.neighbors.split}/neighbors-expr-{self.query_expr}-metric-{metric_type}.parquet"
+        self.file_name = f"{self.neighbors.root_path}/{self.neighbors.name}/{self.neighbors.split}/neighbors-vector-{vector_field_name}-pk-{pk_field_name}-expr-{self.query_expr}-metric-{metric_type}.parquet"
 
     def _calculate_num_epochs(self) -> int:
         total_rows = self.dataset_dict["train"].get_total_rows("train")
