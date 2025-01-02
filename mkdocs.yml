@@ -1,0 +1,71 @@
+site_name: Milvus Dataset
+site_url: https://zhuwenxing.github.io/milvus-dataset
+site_description: A Python library for managing datasets in Milvus
+repo_url: https://github.com/zhuwenxing/milvus-dataset
+repo_name: zhuwenxing/milvus-dataset
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.tabs.link
+    - content.code.annotation
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: true
+            show_root_heading: true
+            show_category_heading: true
+            show_submodules: true
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - admonition
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - footnotes
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - API Reference:
+    - Core: api/core.md
+    - Neighbors: api/neighbors.md
+    - Writer: api/writer.md
+    - Reader: api/reader.md
+  - Examples: examples.md

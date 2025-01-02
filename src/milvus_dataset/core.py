@@ -40,6 +40,9 @@ from .utils import (
     get_json_field_name_list,
     get_sparse_vec_field_name_list,
 )
+from .utils import ModelScopeDatasetUploader
+
+
 from .writer import DatasetWriter
 
 
@@ -67,7 +70,7 @@ class ConfigManager:
     def init_storage(
         self, root_path: str, storage_type: StorageType = StorageType.LOCAL, options=None
     ):
-        logger.info(f"Initializing storage with config: {options}")
+        logger.info(f"Initializing storage")
         if storage_type == StorageType.S3:
             options = self._prepare_s3_options(options)
             self._verify_s3_connection(root_path, options)
@@ -98,23 +101,28 @@ class ConfigManager:
 
     def _verify_s3_connection(self, root_path: str, options: Dict[str, Any]):
         try:
-            logger.info(f"Connecting to S3/MinIO with options: {options}")
+            logger.info(f"Connecting to S3/MinIO")
             fs = fsspec.filesystem("s3", **options)
-            bucket = root_path.split("/")[0]
 
             try:
-                fs.ls(bucket)
-                logger.info(f"Successfully connected to existing bucket: {bucket}")
-            except Exception:
-                try:
-                    fs.mkdir(bucket)
-                    logger.info(f"Successfully created and connected to new bucket: {bucket}")
-                except Exception as create_error:
-                    logger.error(f"Failed to create bucket {bucket}: {create_error!s}")
-                    raise
+                # try to create a small file to verify the connection
+                temp_file_path = os.path.join(root_path, f"milvus-dataset-{int(time.time())}.txt")
+                with fs.open(temp_file_path, "w") as f:
+                    f.write("test")
+                fs.rm(temp_file_path)
+                logger.info(f"Root path '{root_path}' is accessible")
+            except Exception as e:
+                logger.error(
+                    f"Failed to access root path '{root_path}' on S3/MinIO: {e!s}, "
+                    "please check your access key, secret key, endpoint_url, and region_name"
+                )
+                raise
 
         except Exception as e:
-            logger.error(f"Failed to connect to S3/MinIO: {e!s}")
+            logger.error(
+                f"Failed to connect to S3/MinIO: {e!s}, please check your access key, "
+                "secret key, endpoint_url, and region_name"
+            )
             raise
 
     def _initialize(self, config: DatasetConfig):
@@ -173,7 +181,11 @@ class Dataset:
             return CollectionSchema.construct_from_dict(schema_dict)
         return None
 
-    def _ensure_split_exists(self):
+    def _ensure_split_exists(self) -> None:
+        """Ensure the split directory exists.
+
+        Creates the directory for the current split if it doesn't exist.
+        """
         split_dir = f"{self.root_path}/{self.name}/{self.split}"
         self.fs.makedirs(split_dir, exist_ok=True)
 
@@ -467,19 +479,19 @@ class Dataset:
         self._prepare_for_write(mode)
         return DatasetWriter(self, **writer_options)
 
-    def write(
-        self,
-        data: Union[pd.DataFrame, Dict, List[Dict]],
-        mode: str = "append",
-        verify_schema: bool = True,
-    ):
-        """Write data to the dataset"""
-        # Get the writer with the specified mode
-        writer = self.get_writer(mode=mode)
-        result = writer.write(data, verify_schema=verify_schema)
+    # def write(
+    #     self,
+    #     data: Union[pd.DataFrame, Dict, List[Dict]],
+    #     mode: str = "append",
+    #     verify_schema: bool = True,
+    # ):
+    #     """Write data to the dataset"""
+    #     # Get the writer with the specified mode
+    #     writer = self.get_writer(mode=mode)
+    #     result = writer.write(data, verify_schema=verify_schema)
 
-        self._summary = None
-        return result
+    #     self._summary = None
+    #     return result
 
     def read(self, mode: str = "full", batch_size: int = 1000):
         return self.reader.read(mode, batch_size)
@@ -754,7 +766,7 @@ dataset: {self.name}
             table.append("| " + " | ".join(row) + " |")
         file_path = f"{self.storage.root_path}/{self.name}/README.md"
         with self.datasets["train"].fs.open(file_path, "w") as f:
-            f.write(readme + "\n".join(table))
+            f.write(readme + "\n".join(table) + "\n")
 
     def summary(self) -> Dict:
         """
@@ -803,9 +815,9 @@ dataset: {self.name}
         )
         neighbors_computation.compute_ground_truth()
 
-    def get_neighbors(self, query_expr=None):
+    def get_neighbors(self, vector_field_name, pk_field_name="id", query_expr=None, metric_type="cosine"):
         neighbors = self["neighbors"]
-        file_name = f"{neighbors.root_path}/{neighbors.name}/{neighbors.split}/neighbors-{query_expr}.parquet"
+        file_name = f"{neighbors.root_path}/{neighbors.name}/{neighbors.split}/neighbors-vector-{vector_field_name}-pk-{pk_field_name}-expr-{query_expr}-metric-{metric_type}.parquet"
         if neighbors.fs.exists(file_name):
             with neighbors.fs.open(file_name, "rb") as f:
                 return pq.read_table(f).to_pandas()
@@ -821,7 +833,7 @@ dataset: {self.name}
 
     def to_milvus(
         self, milvus_config: Dict, collection_name=None, mode="import", milvus_storage=None
-    ):
+    ) -> None:
         """
         Write the dataset to Milvus. Can be either 'insert' or 'bulk import'.
         Requires the Milvus connection information, which can be passed as a Milvus client.
@@ -890,49 +902,39 @@ dataset: {self.name}
                     logger.info(f"The task {state.task_id} completed with state {state}")
                     task_ids.remove(id)
 
-        logger.info(f"Dataset '{self.name}' has been successfully written to Milvus")
-        c = Collection(self.name)
+        logger.info(f"Dataset '{self.name}' has been successfully written to Milvus collection '{collection_name}'")
+        c = Collection(collection_name)
         c.flush()
         logger.info(f"collection schema {c.schema}")
         logger.info(f"collection num entities {c.num_entities}")
-        create_index_for_all_vector_fields(c)
-        c.load()
-        logger.info("collection loaded")
-        count = c.query(expr="", output_fields=["count(*)"])
-        logger.info(f"collection count {count}")
+        # create_index_for_all_vector_fields(c)
+        # c.load()
+        # logger.info("collection loaded")
+        # count = c.query(expr="", output_fields=["count(*)"])
+        # logger.info(f"collection count {count}")
 
     def to_hf(
         self,
         repo_name: str | None = None,
-        token: str | None = None,
     ):
         """
         Upload a dataset to the Hugging Face Hub
 
         Args:
-            local_path: Local path to save the dataset, if not provided will use a temporary directory
             repo_name: Repository name on Hugging Face Hub (format: 'username/dataset-name')
-            token: Hugging Face token, if not provided will use HF_TOKEN environment variable
-            repo_type: Repository type, defaults to 'dataset'
         """
         # Initialize API
         local_path = f"{self.storage.root_path}/{self.name}"
+        # if storage is not local, download to local
         if self.storage.type != StorageType.LOCAL:
             logger.info("Downloading dataset to local storage")
             self.to_storage(StorageConfig(type=StorageType.LOCAL, root_path=local_path))
         api = HfApi()
-
-        # if storage is s3, download to local
-        if self.storage.type in [StorageType.S3, StorageType.GCS]:
-            local_path = tempfile.mkdtemp()
-            self.to_storage(StorageConfig(type=StorageType.LOCAL, root_path=local_path))
-
+        token = os.environ.get("HF_TOKEN")
         if token is None:
-            token = os.environ.get("HF_TOKEN")
-            if token is None:
-                raise ValueError(
-                    "Please provide a Hugging Face token or set the HF_TOKEN environment variable"
-                )
+            raise ValueError(
+                "Please provide a Hugging Face token or set the HF_TOKEN environment variable"
+            )
 
         if repo_name is None:
             raise ValueError("Please provide a repository name (format: 'username/dataset-name')")
@@ -948,19 +950,44 @@ dataset: {self.name}
                 repo_id=repo_name, repo_type="dataset", token=token, exist_ok=True
             )
 
-            print(f"Uploading data to repository: {repo_name}")
+            logger.info(f"Uploading data to repository: {repo_name}")
 
             # Upload files
             api.upload_folder(
                 folder_path=str(local_path), repo_id=repo_name, repo_type="dataset", token=token
             )
 
-            print(f"Upload successful! Repository URL: {repo_url}")
+            logger.info(f"Upload successful! Repository URL: {repo_url}")
             return repo_url
 
         except Exception as e:
-            print(f"Error occurred during upload: {e!s}")
+            logger.error(f"Error occurred during upload: {e!s}")
             raise
+
+    def to_modelscope(
+        self,
+        repo_name: str | None = None,
+    ):
+        """
+        Upload a dataset to the ModelScope Hub
+
+        Args:
+            repo_name: Repository name on ModelScope Hub (format: 'username/dataset-name')
+        """
+        # Initialize API
+        local_path = f"{self.storage.root_path}/{self.name}"
+        # if storage is not local, download to local
+        if self.storage.storage_type != StorageType.LOCAL:
+            logger.info("Downloading dataset to local storage")
+            self.to_storage(StorageConfig(type=StorageType.LOCAL, root_path=local_path))
+        uploader = ModelScopeDatasetUploader(repo_path=repo_name)
+        success, error_msg = uploader.upload(str(local_path), commit_message="upload dataset")
+        if success:
+            repo_url = f"https://www.modelscope.cn/datasets/{repo_name}"
+            logger.info(f"Upload successful! Repository URL: {repo_url}")
+        else:
+            logger.error(f"upload dataset failed: {error_msg}")
+
 
     def generate_data(
         self,
@@ -1047,12 +1074,7 @@ def list_datasets() -> List[Dict[str, Union[str, Dict]]]:
         for item in fs.ls(root_path):
             if fs.isdir(item):
                 dataset_name = Path(item).name
-                metadata_path = f"{item}/{dataset_name}_metadata.json"
-                metadata = {}
-                if fs.exists(metadata_path):
-                    with fs.open(metadata_path, "r") as f:
-                        metadata = json.load(f)
-                datasets.append({"name": dataset_name, "metadata": metadata})
+                datasets.append({"name": dataset_name})
     except Exception as e:
         logger.error(f"Error listing datasets: {e!s}")
 

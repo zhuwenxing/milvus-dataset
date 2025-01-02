@@ -1,3 +1,13 @@
+"""
+Writer module for efficient dataset writing and management.
+
+This module provides functionality for writing large datasets efficiently,
+with features like automatic file size management, buffered writing,
+and concurrent I/O operations.
+"""
+
+__all__ = ["DatasetWriter"]
+
 import json
 import os
 import tempfile
@@ -14,7 +24,20 @@ from .log_config import logger
 
 
 class DatasetWriter:
-    def __init__(self, dataset, target_file_size_mb=512, num_buffers=10, queue_size=20):
+    """A class for efficiently writing data to a dataset.
+
+    This class implements a buffered writing system with concurrent I/O operations
+    to efficiently handle large-scale data writing tasks. It automatically manages
+    file sizes and provides mechanisms for data buffering and batch processing.
+
+    Args:
+        dataset (Dataset): The target dataset to write to
+        target_file_size_mb (int): Target size for individual files in megabytes (default: 512)
+        num_buffers (int): Number of buffer workers for concurrent writing (default: 10)
+        queue_size (int): Size of the queue for buffering data (default: 20)
+    """
+    def __init__(self, dataset: "Dataset", target_file_size_mb: int = 512, 
+                num_buffers: int = 10, queue_size: int = 20) -> None:
         self.dataset = dataset
         self.target_file_size_bytes = target_file_size_mb * 1024 * 1024
         self.rows_per_file = None
@@ -35,11 +58,11 @@ class DatasetWriter:
         self.file_counter = 0
         self.mode = "append"
 
-    def __enter__(self):
+    def __enter__(self) -> "DatasetWriter":
         self._start_write_threads()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self._flush_all_buffers()
         self._stop_write_threads()
 
@@ -63,20 +86,20 @@ class DatasetWriter:
             metadata = json.load(f)
         logger.info(f"metadata: {metadata}")
 
-    def _start_write_threads(self):
+    def _start_write_threads(self) -> None:
         for _ in range(self.num_buffers):
             thread = threading.Thread(target=self._write_worker)
             thread.daemon = True
             thread.start()
             self.write_threads.append(thread)
 
-    def _stop_write_threads(self):
+    def _stop_write_threads(self) -> None:
         for _ in range(self.num_buffers):
             self.write_queue.put(None)
         for thread in self.write_threads:
             thread.join()
 
-    def _write_worker(self):
+    def _write_worker(self) -> None:
         while True:
             logger.info(f"write queue size: {self.write_queue.qsize()}")
             item = self.write_queue.get()
@@ -111,7 +134,7 @@ class DatasetWriter:
         data: Union[pd.DataFrame, Dict, List[Dict]],
         mode: str = "append",
         verify_schema: bool = True,
-    ):
+    ) -> None:
         self.mode = mode
         logger.info("Validating data schema...")
         self.dataset.verify_schema(data)
@@ -125,7 +148,7 @@ class DatasetWriter:
             raise ValueError("Unsupported data type. Expected DataFrame, Dict, or List[Dict].")
         # self.dataset.summary()
 
-    def _write_dataframe(self, df: pd.DataFrame):
+    def _write_dataframe(self, df: pd.DataFrame) -> None:
         # logger.info(f"Writing {len(df)} rows to dataset")
         if self.rows_per_file is None:
             self.rows_per_file = self._estimate_rows_per_file(df)
@@ -159,11 +182,11 @@ class DatasetWriter:
                     self.buffers[self.current_buffer] = []
                     self.current_buffer = (self.current_buffer + 1) % self.num_buffers
 
-    def _write_dict(self, data: Dict):
+    def _write_dict(self, data: Dict) -> None:
         df = pd.DataFrame(data)
         self._write_dataframe(df)
 
-    def _write_list(self, data: List[Dict]):
+    def _write_list(self, data: List[Dict]) -> None:
         df = pd.DataFrame(data)
         self._write_dataframe(df)
 
@@ -187,7 +210,7 @@ class DatasetWriter:
         )
         return final_rows_per_file
 
-    def _write_buffer(self, buffer_df: pd.DataFrame):
+    def _write_buffer(self, buffer_df: pd.DataFrame) -> None:
         df = buffer_df
         base_path = f"{self.dataset.root_path}/{self.dataset.name}/{self.dataset.split}"
         self.dataset.fs.makedirs(base_path, exist_ok=True)
@@ -210,12 +233,12 @@ class DatasetWriter:
             logger.exception(f"Failed to write file: name={filename}, error={e}")
             raise
 
-    def _flush_all_buffers(self):
+    def _flush_all_buffers(self) -> None:
         for i in range(self.num_buffers):
             if self.buffers[i]:
                 self.write_queue.put(pd.DataFrame(self.buffers[i]))
         self.write_queue.join()
 
-    def _save_metadata(self):
+    def _save_metadata(self) -> None:
         self.dataset.metadata["last_file_number"] = self.file_counter - 1
         self.dataset._save_metadata()

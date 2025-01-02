@@ -1,15 +1,35 @@
 import json
 import random
-
+import os
+import subprocess
+import shutil
+from pathlib import Path
+from typing import Union, List
 import numpy as np
 from faker import Faker
 from ml_dtypes import bfloat16
 from pymilvus import DataType, FunctionType
 from sklearn import preprocessing
+import logging
+
+import os
+import subprocess
+import shutil
+import logging
+from typing import Union, List
+from pathlib import Path
+from modelscope import HubApi
+import dotenv
+dotenv.load_dotenv()
+
+
+
 
 fake = Faker()
 RNG = np.random.default_rng()
 
+# Set up logger
+logger = logging.getLogger(__name__)
 
 DEFAULT_FLOAT_INDEX_PARAM = {
     "index_type": "HNSW",
@@ -436,3 +456,311 @@ def create_index_for_all_vector_fields(collection):
         if f in indexed_fields:
             continue
         collection.create_index(f, DEFAULT_BM25_INDEX_PARAM)
+
+
+class ModelScopeDatasetUploader:
+    def __init__(self, repo_path: str):
+        """
+        Initialize the dataset uploader
+
+        Args:
+            repo_path (str): ModelScope repository path in format: username/repository
+                Example: wxzhuyeah/auto-create
+        """
+        # Validate repository path format
+        if '/' not in repo_path:
+            raise ValueError("Repository path should be in format: username/repository")
+
+        self.namespace, self.dataset_name = repo_path.split('/')
+        self.api = HubApi()
+
+        # Get tokens and login
+        self.sdk_token = os.getenv("MODELSCOPE_SDK_TOKEN")
+        self.git_token = os.getenv("MODELSCOPE_GIT_TOKEN")
+        self.api.login(access_token=self.sdk_token)
+
+        # Build complete repository URL
+        self.repo_url = f"https://oauth2:{self.git_token}@www.modelscope.cn/datasets/{repo_path}.git"
+        self.logger = logger
+
+        # Set working directory
+        self.work_dir = Path.home() / '.modelscope'
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        self.logger.info(f"Working directory: {self.work_dir}")
+
+    def _filter_sensitive_info(self, text: str) -> str:
+        """
+        Filter sensitive information from string
+
+        Args:
+            text: Text to be filtered
+
+        Returns:
+            Filtered text
+        """
+        # Sensitive information patterns to be filtered
+        sensitive_patterns = [
+            (f"oauth2:{self.git_token}@", "oauth2:***@"),  # git token
+            (self.sdk_token, "***"),  # sdk token
+            (self.git_token, "***"),  # git token alone
+        ]
+
+        filtered_text = text
+        for pattern, replacement in sensitive_patterns:
+            if pattern:  # Ensure pattern is not empty
+                filtered_text = filtered_text.replace(pattern, replacement)
+        return filtered_text
+
+    def _run_command(self, command: Union[str, List[str]], cwd: str) -> bool:
+        """
+        Execute shell command
+
+        Args:
+            command: Command to execute, can be string or list
+            cwd: Working directory for command execution
+
+        Returns:
+            bool: Whether command execution was successful
+        """
+        if isinstance(command, list):
+            command_str = ' '.join(command)
+        else:
+            command_str = command
+
+        # Filter sensitive information from logs
+        safe_command = self._filter_sensitive_info(command_str)
+        self.logger.info(f"Executing command: {safe_command} (in directory: {cwd})")
+
+        try:
+            with subprocess.Popen(command_str, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd) as p:
+                stdout, stderr = p.communicate()
+                stdout_str = stdout.decode('utf-8')
+                stderr_str = stderr.decode('utf-8')
+
+                # Filter sensitive information from output
+                safe_stdout = self._filter_sensitive_info(stdout_str)
+                safe_stderr = self._filter_sensitive_info(stderr_str)
+
+                # Special handling for git command output
+                if command_str.startswith('git'):
+                    # Special status outputs for git commands
+                    warning_git_messages = [
+                        "nothing to commit",
+                        "working tree clean",
+                        "up to date",
+                        "Already up to date"
+                    ]
+
+                    # Special handling for git commit
+                    if command_str.startswith('git commit') and any(msg in stdout_str for msg in warning_git_messages):
+                        self.logger.warning(f"Git commit status: {safe_stdout.strip()}")
+                        return True
+                    # Handle other git commands
+                    elif p.returncode != 0:
+                        if any(msg in stdout_str for msg in warning_git_messages):
+                            self.logger.warning(f"Git status: {safe_stdout.strip()}")
+                            return True
+                        else:
+                            self.logger.error(f"Git command failed: {safe_command}\nstdout: {safe_stdout}\nstderr: {safe_stderr}")
+                            return False
+                    else:
+                        self.logger.info(f"Git command succeeded: {safe_stdout.strip()}")
+                        return True
+                else:
+                    # Regular handling for non-git commands
+                    if p.returncode != 0:
+                        self.logger.error(f"Command failed: {safe_command}\nstdout: {safe_stdout}\nstderr: {safe_stderr}")
+                        return False
+                    return True
+        except Exception as e:
+            self.logger.error(f"Error executing command: {safe_command}\nError message: {str(e)}")
+            return False
+
+    def _check_git_lfs_installed(self) -> bool:
+        """Check if Git LFS is installed"""
+        try:
+            subprocess.run(["git", "lfs", "version"], check=True, capture_output=True)
+            return True
+        except subprocess.CalledProcessError:
+            self.logger.error("Git LFS not installed. Please install Git LFS first")
+            return False
+
+    def _setup_git_lfs(self) -> bool:
+        """
+        Set up Git LFS and configure tracking for specific directories
+
+        Returns:
+            bool: Whether setup was successful
+        """
+        try:
+            # Check if Git LFS is installed
+            if not self._check_git_lfs_installed():
+                return False
+
+            # Initialize Git LFS
+            if not self._run_command("git lfs install", self.work_dir):
+                return False
+
+            # Configure LFS tracking rules
+            lfs_track_patterns = [
+                "train/**/*",
+                "test/**/*",
+                "neighbors/**/*"
+            ]
+
+            for pattern in lfs_track_patterns:
+                if not self._run_command(f"git lfs track {pattern}", self.work_dir):
+                    self.logger.error(f"Failed to configure Git LFS tracking: {pattern}")
+                    return False
+                self.logger.info(f"Configured Git LFS tracking: {pattern}")
+
+            # Ensure .gitattributes file is added to version control
+            if not self._run_command("git add .gitattributes", self.work_dir):
+                return False
+
+            return True
+        except Exception as e:
+            self.logger.error(f"Error setting up Git LFS: {str(e)}")
+            return False
+
+    def _ensure_dataset_exists(self) -> bool:
+        """
+        Ensure dataset repository exists, create if it doesn't
+
+        Returns:
+            bool: Whether operation was successful
+        """
+        try:
+            self.api.create_dataset(
+                dataset_name=self.dataset_name,
+                namespace=self.namespace
+            )
+            self.logger.info("Dataset created successfully")
+            return True
+        except Exception as e:
+            # Parse error response
+            error_str = str(e)
+            if "Code': 10020101001" in error_str or "Name already registered" in error_str:
+                # Ignore if dataset already exists
+                self.logger.info(f"Dataset {self.namespace}/{self.dataset_name} already exists, continuing upload process")
+                return True
+            else:
+                self.logger.error(f"Failed to create dataset: {e}")
+                return False
+
+    def _clean_work_dir(self):
+        """Clean working directory while preserving .git folder"""
+        work_dir = Path(self.work_dir)
+        for item in work_dir.iterdir():
+            if item.is_file():
+                item.unlink()
+            elif item.is_dir() and item.name != '.git':
+                shutil.rmtree(item)
+        self.logger.info("Working directory cleaned")
+
+    def _copy_files_to_temp(self, src_path: Union[str, Path], temp_dir: Union[str, Path]) -> bool:
+        """
+        Copy files from source directory to temporary directory
+
+        Args:
+            src_path: Source file or directory path
+            temp_dir: Temporary directory path
+
+        Returns:
+            bool: Whether copy was successful
+        """
+        try:
+            src_path = Path(src_path)
+            temp_dir = Path(temp_dir)
+
+            if src_path.is_file():
+                shutil.copy2(src_path, temp_dir)
+                self.logger.info(f"Copied file: {src_path.name}")
+            elif src_path.is_dir():
+                for item in src_path.rglob('*'):
+                    if item.is_file():
+                        relative_path = item.relative_to(src_path)
+                        dest_path = temp_dir / relative_path
+                        dest_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(item, dest_path)
+                        self.logger.info(f"Copied file: {relative_path}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to copy files: {e}")
+            return False
+
+    def upload(self, src_path: Union[str, Path], commit_message: str = None) -> tuple[bool, str]:
+        """
+        Upload file or directory to repository
+
+        Args:
+            src_path: Path to file or directory to upload
+            commit_message: Commit message
+
+        Returns:
+            tuple[bool, str]: (success status, error message)
+            - If successful, returns (True, "")
+            - If failed, returns (False, error message)
+        """
+        src_path = Path(src_path)
+        if not src_path.exists():
+            return False, f"Path does not exist: {src_path}"
+
+        # Ensure dataset exists
+        if not self._ensure_dataset_exists():
+            return False, "Failed to create or validate dataset"
+
+        try:
+            # Clean working directory
+            dataset_dir = self.work_dir / self.dataset_name
+            dataset_dir.parent.mkdir(parents=True, exist_ok=True)
+            if dataset_dir.exists():
+                shutil.rmtree(dataset_dir)
+            self.logger.info("Cleanup complete, starting upload process...")
+
+            # Ensure directory is clean before cloning
+            self._clean_work_dir()
+
+            # Remove .git directory (if exists) to ensure clean clone
+            git_dir = self.work_dir / '.git'
+            if git_dir.exists():
+                shutil.rmtree(git_dir)
+                self.logger.info("Removed old .git directory")
+
+            # Clone repository
+            self.logger.info("Cloning repository...")
+            if not self._run_command(f"git clone {self.repo_url} .", self.work_dir):
+                return False, "Failed to clone repository"
+
+            # Set up Git LFS
+            self.logger.info("Configuring Git LFS...")
+            if not self._setup_git_lfs():
+                return False, "Failed to configure Git LFS"
+
+            # Copy files to working directory
+            self.logger.info("Copying files to working directory...")
+            if not self._copy_files_to_temp(src_path, self.work_dir):
+                return False, "Failed to copy files to working directory"
+
+            # Git operations
+            git_commands = [
+                ("git add -A", "Failed to add files to Git"),
+                (f"git commit -m \"{commit_message or 'Add dataset files'}\"", "Failed to commit changes"),
+                ("git push origin master", "Failed to push to remote repository")
+            ]
+
+            for cmd, error_msg in git_commands:
+                if not self._run_command(cmd, self.work_dir):
+                    return False, error_msg
+
+            self.logger.info("Dataset upload completed")
+            return True, ""
+        except Exception as e:
+            error_msg = f"Error during upload process: {str(e)}"
+            self.logger.error(error_msg)
+            return False, error_msg
+        finally:
+            # Clean temporary files while preserving .git directory
+            self._clean_work_dir()
+
+

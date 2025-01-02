@@ -1,7 +1,7 @@
 
 
-# todo
+# Roadmap
 
-- [ ] add writer
-- [ ] add reader
-- [ ] add neighbors calculation
+- [ ] Add RESTFul API support
+- [ ] Add command line interface
+- [ ] Add support virtual table

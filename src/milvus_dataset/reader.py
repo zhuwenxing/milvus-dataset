@@ -1,3 +1,13 @@
+"""
+Reader module for efficient dataset reading and streaming.
+
+This module provides functionality for reading datasets with support for
+both batch and streaming modes, offering flexible data access patterns
+for different use cases.
+"""
+
+__all__ = ["DatasetReader"]
+
 from typing import Any, Generator, Optional
 
 import pandas as pd
@@ -7,7 +17,23 @@ from .log_config import logger
 
 
 class DatasetReader:
-    def __init__(self, dataset):
+    """A class for reading data from a dataset.
+
+    This class provides methods for reading dataset contents in different modes,
+    supporting both batch processing and streaming access patterns.
+
+    Args:
+        dataset (Dataset): The dataset to read from
+
+    Examples:
+        >>> reader = DatasetReader(dataset)
+        >>> # Read entire dataset as DataFrame
+        >>> df = reader.read(mode="batch")
+        >>> # Stream data in batches
+        >>> for batch in reader.read(mode="stream", batch_size=1000):
+        ...     process_batch(batch)
+    """
+    def __init__(self, dataset: "Dataset") -> None:
         self.dataset = dataset
 
     def read(

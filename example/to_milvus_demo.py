@@ -65,8 +65,8 @@ if __name__ == "__main__":
     }
 
     milvus_storage = StorageConfig(
-        root_path="s3://milvus-bucket/milvus-dataset",
-        type=StorageType.S3,
+        root_path="milvus-bucket/milvus-dataset",
+        storage_type=StorageType.S3,
         options={
             "key": "minioadmin",
             "secret": "minioadmin",
