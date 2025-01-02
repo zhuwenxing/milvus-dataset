@@ -40,19 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.8", "3.9", "3.10"]
-
-    services:
-      milvus:
-        image: milvusdb/milvus:latest
-        ports:
-          - 19530:19530
-          - 19531:19531
-        options: >-
-          --health-cmd "curl -f http://localhost:9091/api/v1/health"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
     - uses: actions/checkout@v3
