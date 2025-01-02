@@ -1,4 +1,3 @@
-
 from loguru import logger
 from pymilvus import CollectionSchema, DataType, FieldSchema
 
@@ -23,7 +22,7 @@ schema = CollectionSchema(
     fields=[id_field, chunk_field, url_field, title_field, text_field, emb_field],
     description="我的数据集schema",
 )
-dict =schema.to_dict()
+dict = schema.to_dict()
 logger.info(f"schema dict: {dict}")
 
 

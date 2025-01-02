@@ -173,7 +173,7 @@ class NeighborsComputation:
         test_data: pd.DataFrame,
         train_data: pd.DataFrame,
         vector_field_name: str,
-        tmp_path: str
+        tmp_path: str,
     ) -> None:
         """Compute nearest neighbors for a batch of test data.
 
@@ -243,9 +243,7 @@ class NeighborsComputation:
             df_neighbors.to_parquet(f, engine="pyarrow", compression="snappy")
 
     def merge_neighbors(
-        self,
-        final_file_name: str | None = None,
-        tmp_path: str | None = None
+        self, final_file_name: str | None = None, tmp_path: str | None = None
     ) -> str:
         """Merge intermediate neighbor results.
 
@@ -296,7 +294,6 @@ class NeighborsComputation:
                 "pk_field_name": [self.pk_field_name for _ in range(len(test_idx))],
                 "vector_field_name": [self.vector_field_name for _ in range(len(test_idx))],
                 "top_k": [self.top_k for _ in range(len(test_idx))],
-
             }
         )
         logger.info(f"Writing neighbors to {final_file_name}")

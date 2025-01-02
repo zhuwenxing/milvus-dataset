@@ -263,7 +263,7 @@ class Dataset:
         arrow_schema = pa.schema(fields)
         return arrow_schema
 
-    def format_data(self, data): #noqa
+    def format_data(self, data):  # noqa
         schema = self._schema
         binary_vector_field_names = get_binary_vec_field_name_list(schema)
         sparse_vector_field_names = get_sparse_vec_field_name_list(schema)
@@ -809,7 +809,9 @@ dataset: {self.name}
         )
         neighbors_computation.compute_ground_truth()
 
-    def get_neighbors(self, vector_field_name, pk_field_name="id", query_expr=None, metric_type="cosine"):
+    def get_neighbors(
+        self, vector_field_name, pk_field_name="id", query_expr=None, metric_type="cosine"
+    ):
         neighbors = self["neighbors"]
         file_name = f"{neighbors.root_path}/{neighbors.name}/{neighbors.split}/neighbors-vector-{vector_field_name}-pk-{pk_field_name}-expr-{query_expr}-metric-{metric_type}.parquet"
         if neighbors.fs.exists(file_name):
@@ -898,18 +900,20 @@ dataset: {self.name}
                     logger.info(f"The task {state.task_id} completed with state {state}")
                     task_ids.remove(id)
 
-        logger.info(f"Dataset '{self.name}' has been successfully written to Milvus collection '{collection_name}'")
+        logger.info(
+            f"Dataset '{self.name}' has been successfully written to Milvus collection '{collection_name}'"
+        )
 
     def benchmark_milvus(
-        self, 
-        collection_name: str, 
+        self,
+        collection_name: str,
         search_params: dict = None,
         rounds: int = 3,
         top_k: int = None,
         min_concurrent: int = 1,
         max_concurrent: int = 32,
         concurrent_step: int = 2,
-        test_duration: int = 60  # Duration in seconds for each test
+        test_duration: int = 60,  # Duration in seconds for each test
     ) -> pd.DataFrame:
         """
         Benchmark Milvus search performance using different concurrency levels.
@@ -941,17 +945,10 @@ dataset: {self.name}
         # Create index and load collection if not already done
         if not collection.has_index():
             logger.info("Creating index...")
-            metric_type = self.get_neighbors("emb")['metric'].iloc[0].upper()
-            index_params = {
-                "metric_type": metric_type,
-                "index_type": "FLAT",
-                "params": {}
-            }
-            collection.create_index(
-                field_name="emb",
-                index_params=index_params
-            )
-        
+            metric_type = self.get_neighbors("emb")["metric"].iloc[0].upper()
+            index_params = {"metric_type": metric_type, "index_type": "FLAT", "params": {}}
+            collection.create_index(field_name="emb", index_params=index_params)
+
         if not collection.is_loaded():
             logger.info("Loading collection...")
             collection.load()
@@ -960,16 +957,13 @@ dataset: {self.name}
         test_data = self["test"].read(mode="full")
         test_vectors = [np.array(v, dtype=np.float32) for v in test_data["emb"]]
         neighbors_data = self.get_neighbors("emb")
-        metric_type = neighbors_data['metric'].iloc[0].upper()
+        metric_type = neighbors_data["metric"].iloc[0].upper()
 
         if top_k is None:
-            top_k = len(neighbors_data['neighbors_id'].iloc[0])
+            top_k = len(neighbors_data["neighbors_id"].iloc[0])
 
         # Default search parameters
-        default_search_params = {
-            "metric_type": metric_type,
-            "params": {"nprobe": 10}
-        }
+        default_search_params = {"metric_type": metric_type, "params": {"nprobe": 10}}
         if search_params:
             default_search_params.update(search_params)
 
@@ -980,28 +974,30 @@ dataset: {self.name}
                 ready_event.set()
                 # Wait for the start signal
                 start_event.wait()
-                
+
                 search_count = 0
                 results = []
-                
+
                 # Continue searching until stop event is set
                 while not stop_event.is_set():
                     for chunk in vectors:
                         if stop_event.is_set():
                             break
                         search_result = collection.search(
-                            data=[chunk],  # Search one vector at a time for more uniform distribution
+                            data=[
+                                chunk
+                            ],  # Search one vector at a time for more uniform distribution
                             anns_field="emb",
                             param=params,
                             limit=top_k,
-                            output_fields=["idx"]
+                            output_fields=["idx"],
                         )
                         results.extend(search_result)
                         search_count += 1
-                        
+
                 # Put results in queue
                 result_queue.put((search_count, results))
-                
+
             except Exception as e:
                 logger.error(f"Search worker error: {e}")
                 result_queue.put((0, []))
@@ -1012,9 +1008,9 @@ dataset: {self.name}
             for hits, query_idx in zip(search_results, query_indices, strict=False):
                 if hits is None:
                     continue
-                gt_row = neighbors_data[neighbors_data['idx'] == query_idx]
-                gt_neighbors = set(gt_row.iloc[0]['neighbors_id'])
-                milvus_neighbors = set([hit.entity.get('idx') for hit in hits])
+                gt_row = neighbors_data[neighbors_data["idx"] == query_idx]
+                gt_neighbors = set(gt_row.iloc[0]["neighbors_id"])
+                milvus_neighbors = set([hit.entity.get("idx") for hit in hits])
                 recall = len(gt_neighbors.intersection(milvus_neighbors)) / len(gt_neighbors)
                 recall_sum += recall
                 valid_results += 1
@@ -1031,56 +1027,56 @@ dataset: {self.name}
         results = []
         for num_workers in concurrent_levels:
             logger.info(f"\nTesting with {num_workers} concurrent processes...")
-            
+
             # Split test vectors for parallel processing
             chunk_size = max(1, len(test_vectors) // num_workers)
             vector_chunks = [
-                [vec for vec in test_vectors[i:i + chunk_size]]  # Convert each vector to a list
+                [vec for vec in test_vectors[i : i + chunk_size]]  # Convert each vector to a list
                 for i in range(0, len(test_vectors), chunk_size)
             ]
-            
+
             round_metrics = []
             for round in range(rounds):
                 logger.info(f"Round {round + 1}/{rounds}")
-                
+
                 # Create synchronization events and result queue
                 ready_events = [threading.Event() for _ in range(num_workers)]
                 start_event = threading.Event()
                 stop_event = threading.Event()
                 result_queue = queue.Queue()
-                
+
                 # Start workers
                 with ProcessPoolExecutor(max_workers=num_workers) as executor:
                     futures = [
                         executor.submit(
-                            search_worker, 
-                            chunk, 
+                            search_worker,
+                            chunk,
                             default_search_params,
                             ready_events[i],
                             start_event,
                             stop_event,
-                            result_queue
+                            result_queue,
                         )
                         for i, chunk in enumerate(vector_chunks)
                     ]
-                    
+
                     # Wait for all workers to be ready
                     logger.info("Waiting for workers to be ready...")
                     for event in ready_events:
                         event.wait()
-                    
+
                     # Start the test
                     logger.info(f"Starting {test_duration}s test...")
                     start_time = perf_counter()
                     start_event.set()
-                    
+
                     # Run for specified duration
                     sleep(test_duration)
-                    
+
                     # Stop the test
                     stop_event.set()
                     end_time = perf_counter()
-                    
+
                     # Collect results
                     total_searches = 0
                     all_results = []
@@ -1088,42 +1084,48 @@ dataset: {self.name}
                         count, results = result_queue.get()
                         total_searches += count
                         all_results.extend(results)
-                    
+
                     # Calculate metrics
                     duration = end_time - start_time
                     qps = total_searches / duration
                     avg_latency = duration * 1000 / total_searches if total_searches > 0 else 0
-                    recall = calculate_recall(all_results, test_data['idx'])
-                    
-                    round_metrics.append({
-                        'Concurrent': num_workers,
-                        'QPS': qps,
-                        'Latency(ms)': avg_latency,
-                        'Recall': recall
-                    })
-                    
-                    logger.info(f"Round results - QPS: {qps:.2f}, Latency: {avg_latency:.2f}ms, Recall: {recall:.4f}")
-            
+                    recall = calculate_recall(all_results, test_data["idx"])
+
+                    round_metrics.append(
+                        {
+                            "Concurrent": num_workers,
+                            "QPS": qps,
+                            "Latency(ms)": avg_latency,
+                            "Recall": recall,
+                        }
+                    )
+
+                    logger.info(
+                        f"Round results - QPS: {qps:.2f}, Latency: {avg_latency:.2f}ms, Recall: {recall:.4f}"
+                    )
+
             # Average metrics across rounds
             avg_metrics = {
-                'Concurrent': num_workers,
-                'QPS': sum(r['QPS'] for r in round_metrics) / rounds,
-                'Latency(ms)': sum(r['Latency(ms)'] for r in round_metrics) / rounds,
-                'Recall': sum(r['Recall'] for r in round_metrics) / rounds
+                "Concurrent": num_workers,
+                "QPS": sum(r["QPS"] for r in round_metrics) / rounds,
+                "Latency(ms)": sum(r["Latency(ms)"] for r in round_metrics) / rounds,
+                "Recall": sum(r["Recall"] for r in round_metrics) / rounds,
             }
             results.append(avg_metrics)
-            
-            logger.info(f"Average metrics - QPS: {avg_metrics['QPS']:.2f}, "
-                       f"Latency: {avg_metrics['Latency(ms)']:.2f}ms, "
-                       f"Recall: {avg_metrics['Recall']:.4f}")
+
+            logger.info(
+                f"Average metrics - QPS: {avg_metrics['QPS']:.2f}, "
+                f"Latency: {avg_metrics['Latency(ms)']:.2f}ms, "
+                f"Recall: {avg_metrics['Recall']:.4f}"
+            )
 
         # Create DataFrame with results
         df_results = pd.DataFrame(results)
-        
+
         # Print formatted table
-        table = tabulate(df_results, headers='keys', tablefmt='grid', floatfmt='.2f')
+        table = tabulate(df_results, headers="keys", tablefmt="grid", floatfmt=".2f")
         logger.info(f"\nMilvus Benchmark Results:\n{table}")
-        
+
         return df_results
 
     def to_hf(
@@ -1257,7 +1259,9 @@ dataset: {self.name}
                 num_buffers=num_buffers,
                 queue_size=queue_size,
             ) as writer:
-                batch_size = min(split_num_rows, batch_size)  # Process in batches to avoid memory issues
+                batch_size = min(
+                    split_num_rows, batch_size
+                )  # Process in batches to avoid memory issues
                 for batch_start in range(0, split_num_rows, batch_size):
                     batch_end = min(batch_start + batch_size, split_num_rows)
                     batch_size_actual = batch_end - batch_start

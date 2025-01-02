@@ -35,8 +35,14 @@ class DatasetWriter:
         num_buffers (int): Number of buffer workers for concurrent writing (default: 10)
         queue_size (int): Size of the queue for buffering data (default: 20)
     """
-    def __init__(self, dataset: "Dataset", target_file_size_mb: int = 512,
-                num_buffers: int = 10, queue_size: int = 20) -> None:
+
+    def __init__(
+        self,
+        dataset: "Dataset",
+        target_file_size_mb: int = 512,
+        num_buffers: int = 10,
+        queue_size: int = 20,
+    ) -> None:
         self.dataset = dataset
         self.target_file_size_bytes = target_file_size_mb * 1024 * 1024
         self.rows_per_file = None

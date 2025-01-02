@@ -34,6 +34,7 @@ class DatasetReader:
         >>> for batch in reader.read(mode="stream", batch_size=1000):
         ...     process_batch(batch)
     """
+
     def __init__(self, dataset: "Dataset") -> None:
         self.dataset = dataset
 

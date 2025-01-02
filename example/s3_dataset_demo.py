@@ -1,4 +1,3 @@
-
 from loguru import logger
 from pymilvus import CollectionSchema, DataType, FieldSchema
 
@@ -22,9 +21,7 @@ options = {
     "region_name": "us-west-2",
 }
 
-ConfigManager().init_storage(
-    root_path=root_path, storage_type=StorageType.S3, options=options
-)
+ConfigManager().init_storage(root_path=root_path, storage_type=StorageType.S3, options=options)
 
 
 schema = CollectionSchema(

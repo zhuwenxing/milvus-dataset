@@ -16,8 +16,6 @@ from pymilvus import DataType, FunctionType
 dotenv.load_dotenv()
 
 
-
-
 fake = Faker()
 RNG = np.random.default_rng()
 
@@ -461,10 +459,10 @@ class ModelScopeDatasetUploader:
                 Example: wxzhuyeah/auto-create
         """
         # Validate repository path format
-        if '/' not in repo_path:
+        if "/" not in repo_path:
             raise ValueError("Repository path should be in format: username/repository")
 
-        self.namespace, self.dataset_name = repo_path.split('/')
+        self.namespace, self.dataset_name = repo_path.split("/")
         self.api = HubApi()
 
         # Get tokens and login
@@ -473,11 +471,13 @@ class ModelScopeDatasetUploader:
         self.api.login(access_token=self.sdk_token)
 
         # Build complete repository URL
-        self.repo_url = f"https://oauth2:{self.git_token}@www.modelscope.cn/datasets/{repo_path}.git"
+        self.repo_url = (
+            f"https://oauth2:{self.git_token}@www.modelscope.cn/datasets/{repo_path}.git"
+        )
         self.logger = logger
 
         # Set working directory
-        self.work_dir = Path.home() / '.modelscope'
+        self.work_dir = Path.home() / ".modelscope"
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.logger.info(f"Working directory: {self.work_dir}")
 
@@ -516,7 +516,7 @@ class ModelScopeDatasetUploader:
             bool: Whether command execution was successful
         """
         if isinstance(command, list):
-            command_str = ' '.join(command)
+            command_str = " ".join(command)
         else:
             command_str = command
 
@@ -525,27 +525,31 @@ class ModelScopeDatasetUploader:
         self.logger.info(f"Executing command: {safe_command} (in directory: {cwd})")
 
         try:
-            with subprocess.Popen(command_str, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd) as p:
+            with subprocess.Popen(
+                command_str, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd
+            ) as p:
                 stdout, stderr = p.communicate()
-                stdout_str = stdout.decode('utf-8')
-                stderr_str = stderr.decode('utf-8')
+                stdout_str = stdout.decode("utf-8")
+                stderr_str = stderr.decode("utf-8")
 
                 # Filter sensitive information from output
                 safe_stdout = self._filter_sensitive_info(stdout_str)
                 safe_stderr = self._filter_sensitive_info(stderr_str)
 
                 # Special handling for git command output
-                if command_str.startswith('git'):
+                if command_str.startswith("git"):
                     # Special status outputs for git commands
                     warning_git_messages = [
                         "nothing to commit",
                         "working tree clean",
                         "up to date",
-                        "Already up to date"
+                        "Already up to date",
                     ]
 
                     # Special handling for git commit
-                    if command_str.startswith('git commit') and any(msg in stdout_str for msg in warning_git_messages):
+                    if command_str.startswith("git commit") and any(
+                        msg in stdout_str for msg in warning_git_messages
+                    ):
                         self.logger.warning(f"Git commit status: {safe_stdout.strip()}")
                         return True
                     # Handle other git commands
@@ -554,7 +558,9 @@ class ModelScopeDatasetUploader:
                             self.logger.warning(f"Git status: {safe_stdout.strip()}")
                             return True
                         else:
-                            self.logger.error(f"Git command failed: {safe_command}\nstdout: {safe_stdout}\nstderr: {safe_stderr}")
+                            self.logger.error(
+                                f"Git command failed: {safe_command}\nstdout: {safe_stdout}\nstderr: {safe_stderr}"
+                            )
                             return False
                     else:
                         self.logger.info(f"Git command succeeded: {safe_stdout.strip()}")
@@ -562,7 +568,9 @@ class ModelScopeDatasetUploader:
                 else:
                     # Regular handling for non-git commands
                     if p.returncode != 0:
-                        self.logger.error(f"Command failed: {safe_command}\nstdout: {safe_stdout}\nstderr: {safe_stderr}")
+                        self.logger.error(
+                            f"Command failed: {safe_command}\nstdout: {safe_stdout}\nstderr: {safe_stderr}"
+                        )
                         return False
                     return True
         except Exception as e:
@@ -595,11 +603,7 @@ class ModelScopeDatasetUploader:
                 return False
 
             # Configure LFS tracking rules
-            lfs_track_patterns = [
-                "train/**/*",
-                "test/**/*",
-                "neighbors/**/*"
-            ]
+            lfs_track_patterns = ["train/**/*", "test/**/*", "neighbors/**/*"]
 
             for pattern in lfs_track_patterns:
                 if not self._run_command(f"git lfs track {pattern}", self.work_dir):
@@ -624,10 +628,7 @@ class ModelScopeDatasetUploader:
             bool: Whether operation was successful
         """
         try:
-            self.api.create_dataset(
-                dataset_name=self.dataset_name,
-                namespace=self.namespace
-            )
+            self.api.create_dataset(dataset_name=self.dataset_name, namespace=self.namespace)
             self.logger.info("Dataset created successfully")
             return True
         except Exception as e:
@@ -635,7 +636,9 @@ class ModelScopeDatasetUploader:
             error_str = str(e)
             if "Code': 10020101001" in error_str or "Name already registered" in error_str:
                 # Ignore if dataset already exists
-                self.logger.info(f"Dataset {self.namespace}/{self.dataset_name} already exists, continuing upload process")
+                self.logger.info(
+                    f"Dataset {self.namespace}/{self.dataset_name} already exists, continuing upload process"
+                )
                 return True
             else:
                 self.logger.error(f"Failed to create dataset: {e}")
@@ -647,7 +650,7 @@ class ModelScopeDatasetUploader:
         for item in work_dir.iterdir():
             if item.is_file():
                 item.unlink()
-            elif item.is_dir() and item.name != '.git':
+            elif item.is_dir() and item.name != ".git":
                 shutil.rmtree(item)
         self.logger.info("Working directory cleaned")
 
@@ -670,7 +673,7 @@ class ModelScopeDatasetUploader:
                 shutil.copy2(src_path, temp_dir)
                 self.logger.info(f"Copied file: {src_path.name}")
             elif src_path.is_dir():
-                for item in src_path.rglob('*'):
+                for item in src_path.rglob("*"):
                     if item.is_file():
                         relative_path = item.relative_to(src_path)
                         dest_path = temp_dir / relative_path
@@ -715,7 +718,7 @@ class ModelScopeDatasetUploader:
             self._clean_work_dir()
 
             # Remove .git directory (if exists) to ensure clean clone
-            git_dir = self.work_dir / '.git'
+            git_dir = self.work_dir / ".git"
             if git_dir.exists():
                 shutil.rmtree(git_dir)
                 self.logger.info("Removed old .git directory")
@@ -738,8 +741,11 @@ class ModelScopeDatasetUploader:
             # Git operations
             git_commands = [
                 ("git add -A", "Failed to add files to Git"),
-                (f"git commit -m \"{commit_message or 'Add dataset files'}\"", "Failed to commit changes"),
-                ("git push origin master", "Failed to push to remote repository")
+                (
+                    f"git commit -m \"{commit_message or 'Add dataset files'}\"",
+                    "Failed to commit changes",
+                ),
+                ("git push origin master", "Failed to push to remote repository"),
             ]
 
             for cmd, error_msg in git_commands:
@@ -755,5 +761,3 @@ class ModelScopeDatasetUploader:
         finally:
             # Clean temporary files while preserving .git directory
             self._clean_work_dir()
-
-
