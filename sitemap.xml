@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://zhuwenxing.github.io/milvus-dataset/</loc>
+         <lastmod>2025-01-02</lastmod>
+    </url>
+    <url>
+         <loc>https://zhuwenxing.github.io/milvus-dataset/examples/</loc>
+         <lastmod>2025-01-02</lastmod>
+    </url>
+    <url>
+         <loc>https://zhuwenxing.github.io/milvus-dataset/getting-started/</loc>
+         <lastmod>2025-01-02</lastmod>
+    </url>
+    <url>
+         <loc>https://zhuwenxing.github.io/milvus-dataset/api/core/</loc>
+         <lastmod>2025-01-02</lastmod>
+    </url>
+    <url>
+         <loc>https://zhuwenxing.github.io/milvus-dataset/api/neighbors/</loc>
+         <lastmod>2025-01-02</lastmod>
+    </url>
+    <url>
+         <loc>https://zhuwenxing.github.io/milvus-dataset/api/reader/</loc>
+         <lastmod>2025-01-02</lastmod>
+    </url>
+    <url>
+         <loc>https://zhuwenxing.github.io/milvus-dataset/api/writer/</loc>
+         <lastmod>2025-01-02</lastmod>
+    </url>
+</urlset>
