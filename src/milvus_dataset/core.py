@@ -1,11 +1,10 @@
 import json
 import os
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import fsspec
 import numpy as np
@@ -30,25 +29,20 @@ from .neighbors import NeighborsComputation
 from .reader import DatasetReader
 from .storage import StorageConfig, StorageType, _create_filesystem, copy_data
 from .utils import (
-    create_index_for_all_vector_fields,
+    ModelScopeDatasetUploader,
     gen_row_data_by_schema,
     get_bfloat16_vec_field_name_list,
     get_binary_vec_field_name_list,
-    get_data_type_by_field_name,
-    get_dim_by_field_name,
     get_float16_vec_field_name_list,
     get_json_field_name_list,
     get_sparse_vec_field_name_list,
 )
-from .utils import ModelScopeDatasetUploader
-
-
 from .writer import DatasetWriter
 
 
 class DatasetConfig(BaseModel):
     storage: StorageConfig
-    default_schema: Optional[Dict[str, Any]] = None
+    default_schema: dict[str, Any] | None = None
 
 
 class ConfigManager:
@@ -70,7 +64,7 @@ class ConfigManager:
     def init_storage(
         self, root_path: str, storage_type: StorageType = StorageType.LOCAL, options=None
     ):
-        logger.info(f"Initializing storage")
+        logger.info("Initializing storage")
         if storage_type == StorageType.S3:
             options = self._prepare_s3_options(options)
             self._verify_s3_connection(root_path, options)
@@ -79,7 +73,7 @@ class ConfigManager:
         )
         self._initialize(config)
 
-    def _prepare_s3_options(self, options: Dict[str, Any]) -> Dict[str, Any]:
+    def _prepare_s3_options(self, options: dict[str, Any]) -> dict[str, Any]:
         s3_options = {
             "key": options.get("aws_access_key_id")
             or options.get("access_key")
@@ -99,9 +93,9 @@ class ConfigManager:
 
         return s3_options
 
-    def _verify_s3_connection(self, root_path: str, options: Dict[str, Any]):
+    def _verify_s3_connection(self, root_path: str, options: dict[str, Any]):
         try:
-            logger.info(f"Connecting to S3/MinIO")
+            logger.info("Connecting to S3/MinIO")
             fs = fsspec.filesystem("s3", **options)
 
             try:
@@ -201,7 +195,7 @@ class Dataset:
         with self.fs.open(metadata_path, "w") as f:
             json.dump(self.metadata, f)
 
-    def get_schema(self) -> Optional[CollectionSchema]:
+    def get_schema(self) -> CollectionSchema | None:
         """Get the current schema of the dataset."""
         if self._schema is None:
             self._schema = self._load_schema()
@@ -291,7 +285,7 @@ class Dataset:
                 if isinstance(x, str):
                     return x
                 elif isinstance(x, dict) and "indices" in x and "values" in x:
-                    x = dict(zip(x["indices"], x["values"]))
+                    x = dict(zip(x["indices"], x["values"], strict=False))
                     return json.dumps(x)
                 elif isinstance(x, dict) and not ("indices" in x and "values" in x):
                     return json.dumps(x)
@@ -355,7 +349,7 @@ class Dataset:
                 return df
             except pa.ArrowInvalid as e:
                 raise ValueError(f"Data validation failed: {e!s}") from e
-        elif isinstance(values, (dict, list)):
+        elif isinstance(values, dict | list):
             try:
                 df = pd.DataFrame(values)
                 return self.verify_schema(df)
@@ -364,7 +358,7 @@ class Dataset:
         else:
             raise ValueError(f"Unsupported data type: {type(values)}")
 
-    def _get_summary(self) -> Dict[str, Union[str, int, Dict]]:
+    def _get_summary(self) -> dict[str, str | int | dict]:
         if self._summary is None:
             path = f"{self.root_path}/{self.name}/{self.split}"
             if not self.fs.exists(path):
@@ -406,7 +400,7 @@ class Dataset:
 
         return self._summary
 
-    def get_features(self) -> Dict[str, str]:
+    def get_features(self) -> dict[str, str]:
         """
         Get the features (schema) of the dataset.
 
@@ -500,7 +494,7 @@ class Dataset:
         # Implement this method to return the total number of rows for a given split
         pass
 
-    def summary(self) -> Dict[str, Union[str, int, Dict]]:
+    def summary(self) -> dict[str, str | int | dict]:
         path = f"{self.root_path}/{self.name}/{self.split}"
         if not self.fs.exists(path):
             return {
@@ -543,15 +537,15 @@ class Dataset:
 
 
 class DatasetMetadata(BaseModel):
-    name: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    train: Optional[int] = None
-    test: Optional[int] = None
-    source: Optional[str] = None
-    task: Optional[str] = None
-    dense_model: Optional[Dict[str, Any]] = None
-    sparse_model: Optional[Dict[str, Any]] = None
+    name: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    train: int | None = None
+    test: int | None = None
+    source: str | None = None
+    task: str | None = None
+    dense_model: dict[str, Any] | None = None
+    sparse_model: dict[str, Any] | None = None
     license: str = (
         "DISCLAIMER AND LICENSE NOTICE:\n"
         "1. This dataset is intended for benchmarking and research purposes only.\n"
@@ -583,7 +577,7 @@ class DatasetMetadata(BaseModel):
 
 
 class DatasetDict(dict):
-    def __init__(self, datasets: Dict[str, Dataset]):
+    def __init__(self, datasets: dict[str, Dataset]):
         super().__init__(datasets)
         self.datasets = datasets
         self.name = datasets["train"].name
@@ -640,7 +634,7 @@ class DatasetDict(dict):
         self._load_metadata()
         return self.meta
 
-    def set_metadata(self, metadata: Union[DatasetMetadata, Dict[str, Any]]):
+    def set_metadata(self, metadata: DatasetMetadata | dict[str, Any]):
         """Set metadata for the dataset and save it to metadata.json
 
         Args:
@@ -768,7 +762,7 @@ dataset: {self.name}
         with self.datasets["train"].fs.open(file_path, "w") as f:
             f.write(readme + "\n".join(table) + "\n")
 
-    def summary(self) -> Dict:
+    def summary(self) -> dict:
         """
         Get a summary of the entire dataset dictionary.
 
@@ -832,14 +826,16 @@ dataset: {self.name}
         logger.info(f"Schema set for dataset '{self.name}' and all its splits")
 
     def to_milvus(
-        self, milvus_config: Dict, collection_name=None, mode="import", milvus_storage=None
+        self, milvus_config: dict, collection_name=None, mode="import", milvus_storage=None
     ) -> None:
         """
-        Write the dataset to Milvus. Can be either 'insert' or 'bulk import'.
+        Write the dataset to Milvus and verify search recall accuracy.
+        Can be either 'insert' or 'bulk import'.
         Requires the Milvus connection information, which can be passed as a Milvus client.
 
         Args:
             milvus_config (Dict): The Milvus connection configuration.
+            collection_name (str, optional): Name of the Milvus collection. Defaults to dataset name.
             mode (str, optional): The mode of writing to Milvus. Defaults to 'insert'.
             milvus_storage (optional): The Milvus storage configuration. Defaults to None.
 
@@ -903,15 +899,232 @@ dataset: {self.name}
                     task_ids.remove(id)
 
         logger.info(f"Dataset '{self.name}' has been successfully written to Milvus collection '{collection_name}'")
-        c = Collection(collection_name)
-        c.flush()
-        logger.info(f"collection schema {c.schema}")
-        logger.info(f"collection num entities {c.num_entities}")
-        # create_index_for_all_vector_fields(c)
-        # c.load()
-        # logger.info("collection loaded")
-        # count = c.query(expr="", output_fields=["count(*)"])
-        # logger.info(f"collection count {count}")
+
+    def benchmark_milvus(
+        self, 
+        collection_name: str, 
+        search_params: dict = None,
+        rounds: int = 3,
+        top_k: int = None,
+        min_concurrent: int = 1,
+        max_concurrent: int = 32,
+        concurrent_step: int = 2,
+        test_duration: int = 60  # Duration in seconds for each test
+    ) -> pd.DataFrame:
+        """
+        Benchmark Milvus search performance using different concurrency levels.
+        Measures QPS, latency, and recall across different concurrent search configurations.
+
+        Args:
+            collection_name (str): Name of the Milvus collection to benchmark
+            search_params (dict): Optional search parameters to override defaults
+            rounds (int): Number of search rounds for averaging results
+            top_k (int): Number of nearest neighbors to retrieve, defaults to ground truth k
+            min_concurrent (int): Minimum number of concurrent processes
+            max_concurrent (int): Maximum number of concurrent processes
+            concurrent_step (int): Multiplier for increasing concurrency (e.g., 2 means 1,2,4,8,...)
+            test_duration (int): Duration in seconds for each concurrent test
+
+        Returns:
+            pd.DataFrame: Benchmark results including QPS, latency, and recall metrics
+        """
+        import multiprocessing as mp
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        from time import perf_counter, sleep
+        from tabulate import tabulate
+        import threading
+        import queue
+
+        logger.info("Starting Milvus benchmark...")
+        collection = Collection(collection_name)
+
+        # Create index and load collection if not already done
+        if not collection.has_index():
+            logger.info("Creating index...")
+            metric_type = self.get_neighbors("emb")['metric'].iloc[0].upper()
+            index_params = {
+                "metric_type": metric_type,
+                "index_type": "FLAT",
+                "params": {}
+            }
+            collection.create_index(
+                field_name="emb",
+                index_params=index_params
+            )
+        
+        if not collection.is_loaded():
+            logger.info("Loading collection...")
+            collection.load()
+
+        # Prepare search data
+        test_data = self["test"].read(mode="full")
+        test_vectors = [np.array(v, dtype=np.float32) for v in test_data["emb"]]
+        neighbors_data = self.get_neighbors("emb")
+        metric_type = neighbors_data['metric'].iloc[0].upper()
+
+        if top_k is None:
+            top_k = len(neighbors_data['neighbors_id'].iloc[0])
+
+        # Default search parameters
+        default_search_params = {
+            "metric_type": metric_type,
+            "params": {"nprobe": 10}
+        }
+        if search_params:
+            default_search_params.update(search_params)
+
+        def search_worker(vectors, params, ready_event, start_event, stop_event, result_queue):
+            """Worker function that waits for synchronization before starting the actual test"""
+            try:
+                # Signal that this worker is ready
+                ready_event.set()
+                # Wait for the start signal
+                start_event.wait()
+                
+                search_count = 0
+                results = []
+                
+                # Continue searching until stop event is set
+                while not stop_event.is_set():
+                    for chunk in vectors:
+                        if stop_event.is_set():
+                            break
+                        search_result = collection.search(
+                            data=[chunk],  # Search one vector at a time for more uniform distribution
+                            anns_field="emb",
+                            param=params,
+                            limit=top_k,
+                            output_fields=["idx"]
+                        )
+                        results.extend(search_result)
+                        search_count += 1
+                        
+                # Put results in queue
+                result_queue.put((search_count, results))
+                
+            except Exception as e:
+                logger.error(f"Search worker error: {e}")
+                result_queue.put((0, []))
+
+        def calculate_recall(search_results, query_indices):
+            recall_sum = 0
+            valid_results = 0
+            for hits, query_idx in zip(search_results, query_indices, strict=False):
+                if hits is None:
+                    continue
+                gt_row = neighbors_data[neighbors_data['idx'] == query_idx]
+                gt_neighbors = set(gt_row.iloc[0]['neighbors_id'])
+                milvus_neighbors = set([hit.entity.get('idx') for hit in hits])
+                recall = len(gt_neighbors.intersection(milvus_neighbors)) / len(gt_neighbors)
+                recall_sum += recall
+                valid_results += 1
+            return recall_sum / valid_results if valid_results > 0 else 0
+
+        # Generate concurrency levels
+        concurrent_levels = []
+        current = min_concurrent
+        while current <= max_concurrent:
+            concurrent_levels.append(current)
+            current *= concurrent_step
+
+        # Run benchmark
+        results = []
+        for num_workers in concurrent_levels:
+            logger.info(f"\nTesting with {num_workers} concurrent processes...")
+            
+            # Split test vectors for parallel processing
+            chunk_size = max(1, len(test_vectors) // num_workers)
+            vector_chunks = [
+                [vec for vec in test_vectors[i:i + chunk_size]]  # Convert each vector to a list
+                for i in range(0, len(test_vectors), chunk_size)
+            ]
+            
+            round_metrics = []
+            for round in range(rounds):
+                logger.info(f"Round {round + 1}/{rounds}")
+                
+                # Create synchronization events and result queue
+                ready_events = [threading.Event() for _ in range(num_workers)]
+                start_event = threading.Event()
+                stop_event = threading.Event()
+                result_queue = queue.Queue()
+                
+                # Start workers
+                with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                    futures = [
+                        executor.submit(
+                            search_worker, 
+                            chunk, 
+                            default_search_params,
+                            ready_events[i],
+                            start_event,
+                            stop_event,
+                            result_queue
+                        )
+                        for i, chunk in enumerate(vector_chunks)
+                    ]
+                    
+                    # Wait for all workers to be ready
+                    logger.info("Waiting for workers to be ready...")
+                    for event in ready_events:
+                        event.wait()
+                    
+                    # Start the test
+                    logger.info(f"Starting {test_duration}s test...")
+                    start_time = perf_counter()
+                    start_event.set()
+                    
+                    # Run for specified duration
+                    sleep(test_duration)
+                    
+                    # Stop the test
+                    stop_event.set()
+                    end_time = perf_counter()
+                    
+                    # Collect results
+                    total_searches = 0
+                    all_results = []
+                    while not result_queue.empty():
+                        count, results = result_queue.get()
+                        total_searches += count
+                        all_results.extend(results)
+                    
+                    # Calculate metrics
+                    duration = end_time - start_time
+                    qps = total_searches / duration
+                    avg_latency = duration * 1000 / total_searches if total_searches > 0 else 0
+                    recall = calculate_recall(all_results, test_data['idx'])
+                    
+                    round_metrics.append({
+                        'Concurrent': num_workers,
+                        'QPS': qps,
+                        'Latency(ms)': avg_latency,
+                        'Recall': recall
+                    })
+                    
+                    logger.info(f"Round results - QPS: {qps:.2f}, Latency: {avg_latency:.2f}ms, Recall: {recall:.4f}")
+            
+            # Average metrics across rounds
+            avg_metrics = {
+                'Concurrent': num_workers,
+                'QPS': sum(r['QPS'] for r in round_metrics) / rounds,
+                'Latency(ms)': sum(r['Latency(ms)'] for r in round_metrics) / rounds,
+                'Recall': sum(r['Recall'] for r in round_metrics) / rounds
+            }
+            results.append(avg_metrics)
+            
+            logger.info(f"Average metrics - QPS: {avg_metrics['QPS']:.2f}, "
+                       f"Latency: {avg_metrics['Latency(ms)']:.2f}ms, "
+                       f"Recall: {avg_metrics['Recall']:.4f}")
+
+        # Create DataFrame with results
+        df_results = pd.DataFrame(results)
+        
+        # Print formatted table
+        table = tabulate(df_results, headers='keys', tablefmt='grid', floatfmt='.2f')
+        logger.info(f"\nMilvus Benchmark Results:\n{table}")
+        
+        return df_results
 
     def to_hf(
         self,
@@ -988,11 +1201,10 @@ dataset: {self.name}
         else:
             logger.error(f"upload dataset failed: {error_msg}")
 
-
     def generate_data(
         self,
-        num_rows: Union[int, Dict[str, int], None] = None,
-        splits: Optional[List[str]] | None = None,
+        num_rows: int | dict[str, int] | None = None,
+        splits: list[str] | None | None = None,
         target_file_size_mb: int = 512,
         num_buffers: int = 15,
         queue_size: int = 30,
@@ -1064,7 +1276,7 @@ dataset: {self.name}
             logger.info(f"Generated {num_rows[split]} rows of data for split '{split}'")
 
 
-def list_datasets() -> List[Dict[str, Union[str, Dict]]]:
+def list_datasets() -> list[dict[str, str | dict]]:
     config = get_config()
     root_path = config.storage.root_path
     fs = _create_filesystem(config.storage)
@@ -1083,9 +1295,9 @@ def list_datasets() -> List[Dict[str, Union[str, Dict]]]:
 
 def load_dataset(
     name: str,
-    split: Optional[Union[str, List[str]]] = None,
-    schema: Optional[CollectionSchema] = None,
-) -> Union[Dataset, DatasetDict]:
+    split: str | list[str] | None = None,
+    schema: CollectionSchema | None = None,
+) -> Dataset | DatasetDict:
     if split is None:
         splits = ["train", "test", "neighbors"]
         datasets = {

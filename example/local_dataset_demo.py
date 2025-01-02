@@ -1,11 +1,8 @@
-import glob
-import time
 
-import pandas as pd
 from loguru import logger
 from pymilvus import CollectionSchema, DataType, FieldSchema
 
-from milvus_dataset import ConfigManager, StorageType, load_dataset, list_datasets
+from milvus_dataset import ConfigManager, StorageType, list_datasets
 
 logger.info("start to create dataset")
 

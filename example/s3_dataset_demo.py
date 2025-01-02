@@ -1,7 +1,4 @@
-import glob
-import time
 
-import pandas as pd
 from loguru import logger
 from pymilvus import CollectionSchema, DataType, FieldSchema
 
@@ -11,6 +8,7 @@ logger.info("start to create dataset")
 config_manager = ConfigManager()
 
 import dotenv
+
 dotenv.load_dotenv()
 
 key = dotenv.get_key(".env", "AWS_ACCESS_KEY_ID")

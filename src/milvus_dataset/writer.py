@@ -16,7 +16,6 @@ import time
 import uuid
 from datetime import datetime, timezone
 from queue import Queue
-from typing import Dict, List, Union
 
 import pandas as pd
 
@@ -36,7 +35,7 @@ class DatasetWriter:
         num_buffers (int): Number of buffer workers for concurrent writing (default: 10)
         queue_size (int): Size of the queue for buffering data (default: 20)
     """
-    def __init__(self, dataset: "Dataset", target_file_size_mb: int = 512, 
+    def __init__(self, dataset: "Dataset", target_file_size_mb: int = 512,
                 num_buffers: int = 10, queue_size: int = 20) -> None:
         self.dataset = dataset
         self.target_file_size_bytes = target_file_size_mb * 1024 * 1024
@@ -131,7 +130,7 @@ class DatasetWriter:
 
     def write(
         self,
-        data: Union[pd.DataFrame, Dict, List[Dict]],
+        data: pd.DataFrame | dict | list[dict],
         mode: str = "append",
         verify_schema: bool = True,
     ) -> None:
@@ -182,11 +181,11 @@ class DatasetWriter:
                     self.buffers[self.current_buffer] = []
                     self.current_buffer = (self.current_buffer + 1) % self.num_buffers
 
-    def _write_dict(self, data: Dict) -> None:
+    def _write_dict(self, data: dict) -> None:
         df = pd.DataFrame(data)
         self._write_dataframe(df)
 
-    def _write_list(self, data: List[Dict]) -> None:
+    def _write_list(self, data: list[dict]) -> None:
         df = pd.DataFrame(data)
         self._write_dataframe(df)
 

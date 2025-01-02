@@ -8,7 +8,8 @@ for different use cases.
 
 __all__ = ["DatasetReader"]
 
-from typing import Any, Generator, Optional
+from collections.abc import Generator
+from typing import Any
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -37,7 +38,7 @@ class DatasetReader:
         self.dataset = dataset
 
     def read(
-        self, mode: str = "stream", batch_size: Optional[int] = None
+        self, mode: str = "stream", batch_size: int | None = None
     ) -> pd.DataFrame | Generator[Any, Any, None] | Any:
         path = f"{self.dataset.root_path}/{self.dataset.name}/{self.dataset.split}"
         logger.info(f"Attempting to read dataset from path: {path}")

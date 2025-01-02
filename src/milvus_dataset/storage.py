@@ -1,6 +1,6 @@
 import os
 from enum import Enum
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import fsspec
 from fsspec.spec import AbstractFileSystem
@@ -18,7 +18,7 @@ class StorageType(Enum):
 class StorageConfig(BaseModel):
     storage_type: StorageType
     root_path: str
-    options: Dict[str, Any] | None = None
+    options: dict[str, Any] | None = None
 
 
 def _create_filesystem(storage_config: StorageConfig) -> AbstractFileSystem:
@@ -56,8 +56,8 @@ def copy_between_filesystems(
     dest_fs: AbstractFileSystem,
     source_path: str,
     dest_path: str,
-    ignore_patterns: List[str] | None = None,
-) -> List[Tuple[str, str, str]]:
+    ignore_patterns: list[str] | None = None,
+) -> list[tuple[str, str, str]]:
     """
     Copy files and directories from one filesystem to another.
 
@@ -113,8 +113,8 @@ def copy_data(
     dest_config: StorageConfig,
     source_path: str,
     dest_path: str,
-    ignore_patterns: List[str] | None = None,
-) -> List[Tuple[str, str, str]]:
+    ignore_patterns: list[str] | None = None,
+) -> list[tuple[str, str, str]]:
     source_fs = _create_filesystem(source_config)
     dest_fs = _create_filesystem(dest_config)
 

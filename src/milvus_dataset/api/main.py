@@ -1,12 +1,17 @@
-from fastapi import FastAPI, HTTPException, File, UploadFile
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Dict, List, Optional, Union, Any
+from pymilvus import CollectionSchema
+
 from milvus_dataset import (
-    Dataset, DatasetDict, ConfigManager, StorageConfig, StorageType,
-    load_dataset, list_datasets
+    ConfigManager,
+    DatasetDict,
+    StorageConfig,
+    StorageType,
+    list_datasets,
+    load_dataset,
 )
-from pymilvus import CollectionSchema, FieldSchema, DataType
-import json
 
 app = FastAPI(
     title="Milvus Dataset API",
@@ -17,38 +22,38 @@ app = FastAPI(
 class StorageConfigModel(BaseModel):
     root_path: str = "/data/datasets"
     storage_type: str = "LOCAL"
-    options: Optional[Dict] = None
+    options: dict | None = None
 
 class DatasetGenerateModel(BaseModel):
-    num_rows: Union[int, Dict[str, int]]
-    splits: Optional[List[str]] = None
+    num_rows: int | dict[str, int]
+    splits: list[str] | None = None
     target_file_size_mb: int = 512
     num_buffers: int = 15
     queue_size: int = 30
     batch_size: int = 100_000
 
 class WriteDataModel(BaseModel):
-    data: List[Dict[str, Any]]
+    data: list[dict[str, Any]]
     mode: str = "append"
-    writer_options: Optional[Dict[str, Any]] = None
+    writer_options: dict[str, Any] | None = None
 
 class MilvusConfigModel(BaseModel):
-    collection_name: Optional[str] = None
+    collection_name: str | None = None
     mode: str = "import"
-    milvus_config: Dict[str, Any]
-    milvus_storage: Optional[Dict[str, Any]] = None
+    milvus_config: dict[str, Any]
+    milvus_storage: dict[str, Any] | None = None
 
 class StorageDestinationModel(BaseModel):
     destination: StorageConfig
 
 class HuggingFaceConfigModel(BaseModel):
     repo_id: str
-    token: Optional[str] = None
+    token: str | None = None
     private: bool = False
 
 class CreateDatasetModel(BaseModel):
     name: str
-    schema: Dict[str, Any]
+    schema: dict[str, Any]
 
 @app.post("/init_storage")
 async def init_storage(config: StorageConfigModel):
@@ -61,7 +66,7 @@ async def init_storage(config: StorageConfigModel):
         )
         return {"message": "Storage initialized successfully"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get("/datasets")
 async def get_datasets():
@@ -69,7 +74,7 @@ async def get_datasets():
         datasets = list_datasets()
         return {"datasets": datasets}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.post("/datasets")
 async def create_dataset(params: CreateDatasetModel):
@@ -83,10 +88,10 @@ async def create_dataset(params: CreateDatasetModel):
             "dataset": dataset.summary()
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get("/datasets/{name}")
-async def get_dataset(name: str, split: Optional[str] = None):
+async def get_dataset(name: str, split: str | None = None):
     try:
         dataset = load_dataset(name, split=split)
         if isinstance(dataset, DatasetDict):
@@ -110,19 +115,19 @@ async def write_to_dataset(name: str, data: WriteDataModel, split: str = "train"
         dataset = load_dataset(name, split=split)
         if isinstance(dataset, DatasetDict):
             dataset = dataset[split]
-        
+
         writer = dataset.get_writer(
             mode=data.mode,
             **(data.writer_options or {})
         )
-        
+
         for record in data.data:
             writer.write(record)
         writer.close()
-        
+
         return {"message": f"Data written successfully to dataset '{name}' split '{split}'"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.get("/datasets/{name}/read")
 async def read_dataset(
@@ -135,11 +140,11 @@ async def read_dataset(
         dataset = load_dataset(name, split=split)
         if isinstance(dataset, DatasetDict):
             dataset = dataset[split]
-        
+
         data = []
         for batch in dataset.read(mode=mode, batch_size=batch_size):
             data.extend(batch)
-        
+
         return {"data": data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -150,7 +155,7 @@ async def generate_dataset_data(name: str, params: DatasetGenerateModel):
         dataset = load_dataset(name)
         if not isinstance(dataset, DatasetDict):
             raise HTTPException(status_code=400, detail="Dataset must be a DatasetDict")
-        
+
         dataset.generate_data(
             num_rows=params.num_rows,
             splits=params.splits,
@@ -161,7 +166,7 @@ async def generate_dataset_data(name: str, params: DatasetGenerateModel):
         )
         return {"message": f"Data generated successfully for dataset {name}"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.post("/datasets/{name}/to_milvus")
 async def dataset_to_milvus(name: str, config: MilvusConfigModel):
@@ -169,7 +174,7 @@ async def dataset_to_milvus(name: str, config: MilvusConfigModel):
         dataset = load_dataset(name)
         if not isinstance(dataset, DatasetDict):
             raise HTTPException(status_code=400, detail="Dataset must be a DatasetDict")
-        
+
         dataset.to_milvus(
             milvus_config=config.milvus_config,
             collection_name=config.collection_name,
@@ -178,7 +183,7 @@ async def dataset_to_milvus(name: str, config: MilvusConfigModel):
         )
         return {"message": f"Dataset '{name}' successfully exported to Milvus"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.post("/datasets/{name}/to_storage")
 async def dataset_to_storage(name: str, config: StorageDestinationModel):
@@ -186,11 +191,11 @@ async def dataset_to_storage(name: str, config: StorageDestinationModel):
         dataset = load_dataset(name)
         if not isinstance(dataset, DatasetDict):
             raise HTTPException(status_code=400, detail="Dataset must be a DatasetDict")
-        
+
         dataset.to_storage(destination=config.destination)
         return {"message": f"Dataset '{name}' successfully copied to new storage location"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @app.post("/datasets/{name}/to_huggingface")
 async def dataset_to_huggingface(name: str, config: HuggingFaceConfigModel):
@@ -198,17 +203,17 @@ async def dataset_to_huggingface(name: str, config: HuggingFaceConfigModel):
         dataset = load_dataset(name)
         if not isinstance(dataset, DatasetDict):
             raise HTTPException(status_code=400, detail="Dataset must be a DatasetDict")
-        
+
         # Convert to HuggingFace dataset
         from datasets import Dataset as HFDataset
-        
+
         hf_datasets = {}
         for split, ds in dataset.datasets.items():
             data = []
             for batch in ds.read(mode="full"):
                 data.extend(batch)
             hf_datasets[split] = HFDataset.from_dict({k: [d[k] for d in data] for k in data[0].keys()})
-        
+
         # Push to hub
         from datasets import DatasetDict as HFDatasetDict
         hf_dataset_dict = HFDatasetDict(hf_datasets)
@@ -217,7 +222,7 @@ async def dataset_to_huggingface(name: str, config: HuggingFaceConfigModel):
             token=config.token,
             private=config.private
         )
-        
+
         return {"message": f"Dataset '{name}' successfully pushed to HuggingFace Hub"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -6,15 +6,15 @@ relationships between vectors, supporting both CPU and GPU computations when ava
 """
 
 __all__ = [
-    "TempFolderManager",
     "NeighborsComputation",
+    "TempFolderManager",
 ]
 
 import concurrent.futures
 import time
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Dict, List, Optional, Generator, Any, Union, ContextManager
-from typing_extensions import TypedDict
+
 import numba as nb
 import numpy as np
 import pandas as pd
@@ -114,10 +114,10 @@ class NeighborsComputation:
 
     def __init__(
         self,
-        dataset_dict: Dict[str, "Dataset"],
+        dataset_dict: dict[str, "Dataset"],
         vector_field_name: str,
         pk_field_name: str = "id",
-        query_expr: Optional[str] = None,
+        query_expr: str | None = None,
         top_k: int = 1000,
         metric_type: str = "cosine",
         max_rows_per_epoch: int = 1000000,
@@ -169,8 +169,8 @@ class NeighborsComputation:
         return b
 
     def compute_neighbors(
-        self, 
-        test_data: pd.DataFrame, 
+        self,
+        test_data: pd.DataFrame,
         train_data: pd.DataFrame,
         vector_field_name: str,
         tmp_path: str
@@ -243,9 +243,9 @@ class NeighborsComputation:
             df_neighbors.to_parquet(f, engine="pyarrow", compression="snappy")
 
     def merge_neighbors(
-        self, 
-        final_file_name: Optional[str] = None,
-        tmp_path: Optional[str] = None
+        self,
+        final_file_name: str | None = None,
+        tmp_path: str | None = None
     ) -> str:
         """Merge intermediate neighbor results.
 
@@ -306,7 +306,7 @@ class NeighborsComputation:
         logger.info(f"Merge cost time: {time.time() - t0}")
         return final_file_name
 
-    def merge_final_results(self, partial_files: List[str]) -> None:
+    def merge_final_results(self, partial_files: list[str]) -> None:
         """Merge all partial results into a single file.
 
         Args:

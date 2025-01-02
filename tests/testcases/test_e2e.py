@@ -1,11 +1,13 @@
-import random
 import os
 import tempfile
+
 import numpy as np
 import pandas as pd
 import pytest
 from pymilvus import CollectionSchema, DataType, FieldSchema
-from milvus_dataset import ConfigManager, StorageType, list_datasets, load_dataset, StorageConfig
+
+from milvus_dataset import ConfigManager, StorageConfig, StorageType, list_datasets, load_dataset
+
 
 class TestLocalDatasetE2E:
     @classmethod
@@ -309,9 +311,9 @@ class TestLocalDatasetE2E:
         assert len(neighbors_data) == test_samples  # One row per test sample
 
         # Import data to Milvus and verify using search
-        from pymilvus import connections, Collection, utility
-        import tempfile
         import time
+
+        from pymilvus import Collection, connections, utility
 
         # Setup Milvus connection
         connections.connect(
@@ -379,7 +381,7 @@ class TestLocalDatasetE2E:
 
         # Calculate recall
         recall_sum = 0
-        for i, (hits, query_idx) in enumerate(zip(milvus_results, test_data['idx'])):
+        for i, (hits, query_idx) in enumerate(zip(milvus_results, test_data['idx'], strict=False)):
             # Get ground truth neighbors for this query
             gt_row = neighbors_data[neighbors_data['idx'] == query_idx]
             assert not gt_row.empty, f"No ground truth found for query_idx {query_idx}"

@@ -3,7 +3,7 @@ import logging.handlers
 import os
 import sys
 from pathlib import Path
-from typing import ClassVar, Dict
+from typing import ClassVar
 
 import colorama
 from colorama import Fore, Style
@@ -22,7 +22,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 class ColoredFormatter(logging.Formatter):
     """Custom formatter with colors for console output"""
 
-    COLORS: ClassVar[Dict[str, str]] = {
+    COLORS: ClassVar[dict[str, str]] = {
         "DEBUG": Fore.BLUE,
         "INFO": Fore.GREEN,
         "WARNING": Fore.YELLOW,

@@ -1,7 +1,7 @@
 from loguru import logger
 from pymilvus import CollectionSchema, DataType, FieldSchema
 
-from milvus_dataset import ConfigManager, StorageConfig, StorageType, load_dataset
+from milvus_dataset import ConfigManager, StorageType, load_dataset
 
 logger.info("Start to create dataset with all data types")
 

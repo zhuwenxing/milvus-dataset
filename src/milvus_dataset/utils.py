@@ -1,25 +1,18 @@
 import json
-import random
+import logging
 import os
-import subprocess
+import random
 import shutil
+import subprocess
 from pathlib import Path
-from typing import Union, List
+
+import dotenv
 import numpy as np
 from faker import Faker
 from ml_dtypes import bfloat16
-from pymilvus import DataType, FunctionType
-from sklearn import preprocessing
-import logging
-
-import os
-import subprocess
-import shutil
-import logging
-from typing import Union, List
-from pathlib import Path
 from modelscope import HubApi
-import dotenv
+from pymilvus import DataType, FunctionType
+
 dotenv.load_dotenv()
 
 
@@ -511,7 +504,7 @@ class ModelScopeDatasetUploader:
                 filtered_text = filtered_text.replace(pattern, replacement)
         return filtered_text
 
-    def _run_command(self, command: Union[str, List[str]], cwd: str) -> bool:
+    def _run_command(self, command: str | list[str], cwd: str) -> bool:
         """
         Execute shell command
 
@@ -573,7 +566,7 @@ class ModelScopeDatasetUploader:
                         return False
                     return True
         except Exception as e:
-            self.logger.error(f"Error executing command: {safe_command}\nError message: {str(e)}")
+            self.logger.error(f"Error executing command: {safe_command}\nError message: {e!s}")
             return False
 
     def _check_git_lfs_installed(self) -> bool:
@@ -620,7 +613,7 @@ class ModelScopeDatasetUploader:
 
             return True
         except Exception as e:
-            self.logger.error(f"Error setting up Git LFS: {str(e)}")
+            self.logger.error(f"Error setting up Git LFS: {e!s}")
             return False
 
     def _ensure_dataset_exists(self) -> bool:
@@ -658,7 +651,7 @@ class ModelScopeDatasetUploader:
                 shutil.rmtree(item)
         self.logger.info("Working directory cleaned")
 
-    def _copy_files_to_temp(self, src_path: Union[str, Path], temp_dir: Union[str, Path]) -> bool:
+    def _copy_files_to_temp(self, src_path: str | Path, temp_dir: str | Path) -> bool:
         """
         Copy files from source directory to temporary directory
 
@@ -689,7 +682,7 @@ class ModelScopeDatasetUploader:
             self.logger.error(f"Failed to copy files: {e}")
             return False
 
-    def upload(self, src_path: Union[str, Path], commit_message: str = None) -> tuple[bool, str]:
+    def upload(self, src_path: str | Path, commit_message: str = None) -> tuple[bool, str]:
         """
         Upload file or directory to repository
 
@@ -756,7 +749,7 @@ class ModelScopeDatasetUploader:
             self.logger.info("Dataset upload completed")
             return True, ""
         except Exception as e:
-            error_msg = f"Error during upload process: {str(e)}"
+            error_msg = f"Error during upload process: {e!s}"
             self.logger.error(error_msg)
             return False, error_msg
         finally:
