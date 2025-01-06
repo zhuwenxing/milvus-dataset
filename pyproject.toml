@@ -5,7 +5,7 @@ description = "Default template for PDM package"
 authors = [
     {name = "zhuwenxing", email = "wenxing.zhu@zilliz.com"},
 ]
-dependencies = ["pydantic>=2.10.3", "pandas>=2.2.3", "fsspec>=2024.10.0", "pyarrow>=18.1.0", "s3fs>=2024.10.0", "gcsfs>=2024.10.0", "tqdm>=4.67.1", "loguru>=0.7.3", "scikit-learn>=1.6.0", "pymilvus>=2.5.0", "numba>=0.60.0", "datasets>=2.14.4", "colorama>=0.4.6", "ml-dtypes", "faker>=33.1.0", "modelscope>=1.21.0"]
+dependencies = ["pydantic>=2.10.3", "pandas>=2.2.3", "fsspec>=2024.10.0", "pyarrow>=18.1.0", "s3fs>=2024.10.0", "gcsfs>=2024.10.0", "tqdm>=4.67.1", "loguru>=0.7.3", "scikit-learn>=1.6.0", "pymilvus>=2.5.0", "numba>=0.60.0", "datasets>=2.14.4", "colorama>=0.4.6", "ml-dtypes", "faker>=33.1.0", "modelscope>=1.21.0", "h5py>=3.12.1"]
 requires-python = ">=3.10"
 readme = "README.md"
 license = {text = "MIT"}
@@ -13,9 +13,6 @@ license = {text = "MIT"}
 [build-system]
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
-
-[tool.pdm.version]
-source = "scm"
 
 [dependency-groups]
 lint = [
@@ -43,6 +40,7 @@ dev = [
     "mkdocs-material>=9.5.49",
     "mkdocstrings[python]>=0.27.0",
     "mkdocs-material-extensions>=1.3.1",
+    "pdm-backend>=2.4.3",
 ]
 
 [tool.ruff]
@@ -68,8 +66,12 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["milvus_dataset"]
 
+
 [tool.pdm]
 distribution = true
+[tool.pdm.version]
+source = "scm"
+version_format = "src.version:format_version"
 
 [tool.pdm.scripts]
 web = "streamlit run src/milvus_dataset/web/app.py"

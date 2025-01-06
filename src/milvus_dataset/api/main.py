@@ -15,7 +15,7 @@ from milvus_dataset import (
 
 app = FastAPI(
     title="Milvus Dataset API",
-    description="RESTful API for managing Milvus datasets",
+    description="RESTFul API for managing Milvus datasets",
     version="1.0.0",
 )
 

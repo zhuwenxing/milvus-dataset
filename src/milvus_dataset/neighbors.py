@@ -217,7 +217,15 @@ class NeighborsComputation:
 
         else:
             logger.info("Using CPU for neighbor computation")
-            distance = pairwise_distances(train_emb, Y=test_emb, metric=self.metric_type, n_jobs=-1)
+            logger.info(f"test_emb shape: {test_emb.shape}, train_emb shape: {train_emb.shape}")
+            if self.metric_type == "inner_product":
+                # Compute inner product using matrix multiplication
+
+                distance = -1 * (train_emb @ test_emb.T)  # Transpose to get (num_test, num_train)
+
+            else:
+                distance = pairwise_distances(train_emb, Y=test_emb, metric=self.metric_type, n_jobs=-1)
+            logger.info(f"distance matrix shape: {distance.shape}")
             distance = np.array(distance.T, order="C", dtype=np.float32)
             distance_sorted_arg = self.fast_sort(distance)
             indices = distance_sorted_arg[:, : self.top_k]

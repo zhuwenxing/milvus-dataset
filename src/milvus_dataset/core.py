@@ -1141,11 +1141,11 @@ dataset: {self.name}
         # Initialize API
         local_path = f"{self.storage.root_path}/{self.name}"
         # if storage is not local, download to local
-        if self.storage.type != StorageType.LOCAL:
+        if self.storage.storage_type != StorageType.LOCAL:
             logger.info("Downloading dataset to local storage")
-            self.to_storage(StorageConfig(type=StorageType.LOCAL, root_path=local_path))
+            self.to_storage(StorageConfig(storage_type=StorageType.LOCAL, root_path=local_path))
         api = HfApi()
-        token = os.environ.get("HF_TOKEN")
+        token = os.environ.get("HF_TOKEN")      
         if token is None:
             raise ValueError(
                 "Please provide a Hugging Face token or set the HF_TOKEN environment variable"

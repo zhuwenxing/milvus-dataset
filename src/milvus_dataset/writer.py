@@ -141,8 +141,8 @@ class DatasetWriter:
         verify_schema: bool = True,
     ) -> None:
         self.mode = mode
-        logger.info("Validating data schema...")
-        self.dataset.verify_schema(data)
+        
+
         if isinstance(data, pd.DataFrame):
             self._write_dataframe(data)
         elif isinstance(data, dict):
@@ -155,6 +155,7 @@ class DatasetWriter:
 
     def _write_dataframe(self, df: pd.DataFrame) -> None:
         # logger.info(f"Writing {len(df)} rows to dataset")
+        self.dataset.verify_schema(df)
         if self.rows_per_file is None:
             self.rows_per_file = self._estimate_rows_per_file(df)
         batch_size = 10000
