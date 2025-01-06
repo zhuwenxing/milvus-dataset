@@ -26,9 +26,7 @@ from .log_config import logger
 
 try:
     import cupy as cp
-    from pylibraft.common import Handle
-    from pylibraft.distance import pairwise_distance as raft_pairwise_distance
-    from pylibraft.neighbors.brute_force import knn
+    from cuvs.distance import cuvs_pairwise_distance
 
     GPU_AVAILABLE = True
 except ImportError:
@@ -195,25 +193,14 @@ class NeighborsComputation:
             logger.info("Using GPU for neighbor computation")
             test_emb_gpu = cp.array(test_emb, dtype=cp.float32)
             train_emb_gpu = cp.array(train_emb, dtype=cp.float32)
-
-            if self.top_k <= 1024:
-                distances, indices = knn(
-                    train_emb_gpu, test_emb_gpu, k=self.top_k, metric=self.metric_type
-                )
-
-                distances = cp.asnumpy(distances)
-                indices = cp.asnumpy(indices)
-            else:
-                handle = Handle()
-                distance = raft_pairwise_distance(
-                    train_emb_gpu, test_emb_gpu, metric=self.metric_type, handle=handle
-                )
-                handle.sync()
-                distance = cp.asnumpy(distance)
-                distance = np.array(distance.T, order="C")
-                distance_sorted_arg = self.fast_sort(distance)
-                indices = distance_sorted_arg[:, : self.top_k]
-                distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
+            distance = cuvs_pairwise_distance(
+                train_emb_gpu, test_emb_gpu, metric=self.metric_type
+            )
+            distance = cp.asnumpy(distance)
+            distance = np.array(distance.T, order="C")
+            distance_sorted_arg = self.fast_sort(distance)
+            indices = distance_sorted_arg[:, : self.top_k]
+            distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
 
         else:
             logger.info("Using CPU for neighbor computation")
