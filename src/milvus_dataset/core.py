@@ -154,6 +154,19 @@ class Dataset:
             f"num_files={summary['num_files']})"
         )
 
+    def __len__(self) -> int:
+        """Get the total number of rows in the dataset.
+
+        Returns:
+            int: Total number of rows
+        """
+        total_rows = 0
+        for file_path in self.fs.glob(f"{self.root_path}/{self.name}/{self.split}/*.parquet"):
+            with self.fs.open(file_path, "rb") as f:
+                metadata = pq.read_metadata(f)
+                total_rows += metadata.num_rows
+        return total_rows
+
     def set_schema(self, schema: CollectionSchema):
         """Set the schema for the dataset."""
         self._schema = schema

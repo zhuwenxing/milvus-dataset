@@ -12,9 +12,9 @@ __all__ = [
 
 import concurrent.futures
 import time
+import math
 from collections.abc import Generator
 from contextlib import contextmanager
-
 import numba as nb
 import numpy as np
 import pandas as pd
@@ -26,10 +26,11 @@ from .log_config import logger
 
 try:
     import cupy as cp
-    from cuvs.distance import cuvs_pairwise_distance
+    from cuvs.distance import pairwise_distance as cuvs_pairwise_distance
 
     GPU_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    logger.info(f"import failed with error {e}")
     GPU_AVAILABLE = False
 
 
@@ -108,6 +109,7 @@ class NeighborsComputation:
         top_k (int): Number of nearest neighbors to compute (default: 1000)
         metric_type (str): Distance metric to use (default: "cosine")
         max_rows_per_epoch (int): Maximum rows to process per epoch (default: 1000000)
+        test_batch_size (int): Batch size for test data processing (default: 5000)
     """
 
     def __init__(
@@ -118,7 +120,8 @@ class NeighborsComputation:
         query_expr: str | None = None,
         top_k: int = 1000,
         metric_type: str = "cosine",
-        max_rows_per_epoch: int = 1000000,
+        max_rows_per_epoch: int = 30000,
+        test_batch_size: int = 5000,
     ) -> None:
         """Initialize the NeighborsComputation instance.
 
@@ -130,6 +133,7 @@ class NeighborsComputation:
             top_k (int): Number of nearest neighbors to compute (default: 1000)
             metric_type (str): Distance metric to use (default: "cosine")
             max_rows_per_epoch (int): Maximum rows to process per epoch (default: 1000000)
+            test_batch_size (int): Batch size for test data processing (default: 5000)
         """
         self.dataset_dict = dataset_dict
         self.vector_field_name = vector_field_name
@@ -138,6 +142,7 @@ class NeighborsComputation:
         self.top_k = top_k
         self.metric_type = metric_type
         self.max_rows_per_epoch = max_rows_per_epoch
+        self.test_batch_size = test_batch_size
         self.neighbors = self.dataset_dict["neighbors"]
         self.file_name = f"{self.neighbors.root_path}/{self.neighbors.name}/{self.neighbors.split}/neighbors-vector-{vector_field_name}-pk-{pk_field_name}-expr-{self.query_expr}-metric-{metric_type}.parquet"
 
@@ -249,12 +254,15 @@ class NeighborsComputation:
         Returns:
             str: Final output file name
         """
+        t_start = time.time()
         neighbors = self.dataset_dict["neighbors"]
         file_list = neighbors.fs.glob(f"{tmp_path}/*.parquet")
         logger.info(f"Found {len(file_list)} in {tmp_path}")
         neighbors_id = None
         test_idx = None
-        t0 = time.time()
+
+        # Read and merge files
+        t_read_start = time.time()
         for f in file_list:
             with neighbors.fs.open(f, "rb") as f:
                 df_n = pq.read_table(f).to_pandas()
@@ -264,21 +272,34 @@ class NeighborsComputation:
                 neighbors_id = tmp_neighbors_id
             else:
                 neighbors_id = np.concatenate((neighbors_id, tmp_neighbors_id), axis=1)
+        logger.info(f"Reading and merging files took: {time.time() - t_read_start:.3f}s")
+
+        # Create result array
+        t_result_start = time.time()
         result = np.empty(
             neighbors_id.shape, dtype=[(self.pk_field_name, "int64"), ("distance", "float64")]
         )
         for index, _value in np.ndenumerate(neighbors_id):
             result[index] = (neighbors_id[index][0], neighbors_id[index][1])
-        logger.info(f"result \n: {result}")
+        logger.info(f"Creating result array took: {time.time() - t_result_start:.3f}s")
+
+        # Sort results
+        t_sort_start = time.time()
         sorted_result = np.sort(result, axis=1, order=["distance"])
+        logger.info(f"Sorting results took: {time.time() - t_sort_start:.3f}s")
+
+        # Process final results
+        t_process_start = time.time()
         final_result = np.empty(sorted_result.shape, dtype="i8")
         for index, _value in np.ndenumerate(sorted_result):
             final_result[index] = sorted_result[index][0]
-        logger.info(f"final_result \n: {final_result}")
         final_distance = np.empty(sorted_result.shape, dtype="f8")
         for index, _value in np.ndenumerate(sorted_result):
             final_distance[index] = sorted_result[index][1]
+        logger.info(f"Processing final results took: {time.time() - t_process_start:.3f}s")
 
+        # Create DataFrame
+        t_df_start = time.time()
         df = pd.DataFrame(
             data={
                 "idx": test_idx,
@@ -291,11 +312,16 @@ class NeighborsComputation:
                 "top_k": [self.top_k for _ in range(len(test_idx))],
             }
         )
-        logger.info(f"Writing neighbors to {final_file_name}")
+        logger.info(f"Creating DataFrame took: {time.time() - t_df_start:.3f}s")
 
+        # Write results
+        t_write_start = time.time()
+        logger.info(f"Writing neighbors to {final_file_name}")
         with neighbors.fs.open(final_file_name, "wb") as f:
             df.to_parquet(f, engine="pyarrow", compression="snappy")
-        logger.info(f"Merge cost time: {time.time() - t0}")
+        logger.info(f"Writing results took: {time.time() - t_write_start:.3f}s")
+        
+        logger.info(f"Total merge time: {time.time() - t_start:.3f}s")
         return final_file_name
 
     def merge_final_results(self, partial_files: list[str]) -> None:
@@ -343,45 +369,61 @@ class NeighborsComputation:
             self.neighbors.fs.rm(file)
         logger.info("Cleaned up partial result files")
 
-    def compute_ground_truth(self) -> str:
-        """Compute ground truth nearest neighbors.
+    def compute_ground_truth(self):
+        logger.info(f"Computing ground truth")
+        start_time = time.time()
 
-        This method orchestrates the computation of nearest neighbors across
-        the entire dataset, managing the computation in epochs if necessary
-        and merging partial results.
+        # Get total counts directly
+        total_test_rows = len(self.dataset_dict['test'])
+        total_train_rows = len(self.dataset_dict['train'])
+        
+        # Calculate expected number of batches using math.ceil
+        test_count = math.ceil(total_test_rows / self.test_batch_size)
+        train_count = math.ceil(total_train_rows / self.max_rows_per_epoch)
+        
+        logger.info(f"Total test batches: {test_count}, total test rows: {total_test_rows}")
+        logger.info(f"Total train batches: {train_count}, total train rows: {total_train_rows}")
 
-        Returns:
-            str: Path to the final results file
-        """
-        logger.info("Computing ground truth")
-
-        test_data_batches = list(self.dataset_dict["test"].read(mode="batch", batch_size=2000))
-        train_data_batches = list(
-            self.dataset_dict["train"].read(mode="batch", batch_size=self.max_rows_per_epoch)
-        )
-        logger.info(f"train data batches num: {len(train_data_batches)}")
+        test_data_generator = self.dataset_dict['test'].read(mode='batch', batch_size=self.test_batch_size)
+        train_data_generator = self.dataset_dict['train'].read(mode='batch', batch_size=self.max_rows_per_epoch)
 
         temp_manager = TempFolderManager(self.neighbors)
         partial_files = []
+        processed_test_rows = 0
+
         with temp_manager.temp_folder("tmp") as tmp_path:
-            for i, test_data in enumerate(test_data_batches):
-                logger.info(f"Computing ground truth for batch, test size: {len(test_data)}")
+            for i, test_data in enumerate(test_data_generator):
+                batch_start_time = time.time()
+                processed_test_rows += len(test_data)
+                progress = (processed_test_rows / total_test_rows) * 100
+                elapsed_time = time.time() - start_time
+                eta = (elapsed_time / processed_test_rows) * (total_test_rows - processed_test_rows) if processed_test_rows > 0 else 0
+                
+                logger.info(f"Processing test batch {i+1}/{test_count} ({progress:.2f}% complete)")
+                logger.info(f"Test batch size: {len(test_data)}, Elapsed: {elapsed_time:.2f}s, ETA: {eta:.2f}s")
+
                 with temp_manager.temp_folder(f"tmp_{i}") as tmp_test_split_path:
-                    for _, train_train in enumerate(train_data_batches):
-                        # use query expr to filter train
-                        if self.query_expr is not None:
-                            train_train = train_train.query(self.query_expr)
-                        logger.info(
-                            f"Computing ground truth for batch, train size: {len(train_train)}"
-                        )
-                        self.compute_neighbors(
-                            test_data,
-                            train_train,
-                            self.vector_field_name,
-                            tmp_test_split_path,
-                        )
+                    processed_train_rows = 0
+                    for j, train_train in enumerate(train_data_generator):
+                        processed_train_rows += len(train_train)
+                        train_progress = (processed_train_rows / total_train_rows) * 100
+                        logger.info(f"Computing neighbors for train batch {j+1}/{train_count} ({train_progress:.2f}% of train data)")
+                        logger.info(f"Train batch size: {len(train_train)}")
+                        self.compute_neighbors(test_data, train_train, self.vector_field_name, tmp_test_split_path)
+
+                    # Reset train data generator for next test batch
+                    train_data_generator = self.dataset_dict['train'].read(mode='batch', batch_size=self.max_rows_per_epoch)
 
                     merged_file_name = f"{tmp_path}/neighbors-{self.query_expr}-{i}.parquet"
                     partial_file = self.merge_neighbors(merged_file_name, tmp_test_split_path)
                     partial_files.append(partial_file)
+                    
+                batch_time = time.time() - batch_start_time
+                logger.info(f"Completed test batch {i+1} in {batch_time:.2f}s")
+
+            total_time = time.time() - start_time
+            logger.info(f"All test batches processed in {total_time:.2f}s")
             self.merge_final_results(partial_files)
+            
+        final_time = time.time() - start_time
+        logger.info(f"Ground truth computation completed in {final_time:.2f}s")
