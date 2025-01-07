@@ -26,11 +26,13 @@ from tqdm import tqdm
 from .log_config import logger
 
 try:
+    import cupy
     import cupy as cp
     from cuvs.distance import pairwise_distance as cuvs_pairwise_distance
 
     GPU_AVAILABLE = True
-except ImportError as e:
+except Exception as e:
+    import_error = e
     logger.info(f"import failed with error {e}")
     GPU_AVAILABLE = False
 
@@ -200,7 +202,7 @@ class NeighborsComputation:
             self.use_gpu = GPU_AVAILABLE
         elif device == "cuda":
             if not GPU_AVAILABLE:
-                raise RuntimeError("CUDA device requested but GPU is not available")
+                raise RuntimeError(f"CUDA device requested but GPU is not available with import error {import_error}")
             self.use_gpu = True
         else:  # device == "cpu"
             self.use_gpu = False
