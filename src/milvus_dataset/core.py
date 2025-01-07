@@ -372,6 +372,7 @@ class Dataset:
             raise ValueError(f"Unsupported data type: {type(values)}")
 
     def _get_summary(self) -> dict[str, str | int | dict]:
+        # TODO: add a function to sort the files in the format of train/test-{index:5d}-of-{total:5d}.parquet
         if self._summary is None:
             path = f"{self.root_path}/{self.name}/{self.split}"
             if not self.fs.exists(path):
@@ -389,22 +390,40 @@ class Dataset:
                 total_size = 0
                 schema_dict = {}
                 num_files = 0
-                files = self.fs.ls(f"{path}")
+                
+                if self.split in ['train', 'test']:
+                    # Sort files by creation time
+                    files = [(f, self.fs.info(f)['created']) for f in self.fs.glob(f"{path}/*.parquet")]
+                    files.sort(key=lambda x: x[1])  # Sort by creation time
+                    
+                    # Rename files according to their sorted order
+                    for idx, (old_file, _) in enumerate(files, 1):
+                        new_name = f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet"
+                        if old_file != new_name:
+                            self.fs.rename(old_file, new_name)
+                    files = [f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet" for idx in range(1, len(files) + 1)]
+                else:
+                    files = self.fs.glob(f"{path}/*.parquet")
+                    
                 logger.info(f"files in path {path}: {files}")
-                for file in self.fs.glob(f"{path}/*.parquet"):
+                for file in files:
                     num_files += 1
-                    with self.fs.open(file, "rb") as f:
-                        parquet_file = pq.ParquetFile(f)
-                        total_rows += parquet_file.metadata.num_rows
-                        if not schema_dict:
-                            schema = parquet_file.schema.to_arrow_schema()
-                            schema_dict = {field.name: str(field.type) for field in schema}
-                        total_size += self.fs.info(file)["size"]
+                    try:
+                        with self.fs.open(file, "rb") as f:
+                            parquet_file = pq.ParquetFile(f)
+                            total_rows += parquet_file.metadata.num_rows
+                            if not schema_dict:
+                                schema = parquet_file.schema.to_arrow_schema()
+                                schema_dict = {field.name: str(field.type) for field in schema}
+                            total_size += self.fs.info(file)["size"]
+                    except Exception as e:
+                        logger.error(f"Error reading file {file}: {e!s}")
+                        continue
 
                 self._summary = {
                     "name": self.name,
                     "split": self.split,
-                    "size": total_size,
+                    "size": f"{total_size / 1024 / 1024:.3f} MB",
                     "num_rows": total_rows,
                     "num_columns": len(schema_dict),
                     "schema": schema_dict,
@@ -524,7 +543,22 @@ class Dataset:
         schema_dict = {}
         num_files = 0
 
-        for file in self.fs.glob(f"{path}/*.parquet"):
+        if self.split in ['train', 'test']:
+            # Sort files by creation time
+            files = [(f, self.fs.info(f)['created']) for f in self.fs.glob(f"{path}/*.parquet")]
+            files.sort(key=lambda x: x[1])  # Sort by creation time
+            
+            # Rename files according to their sorted order
+            for idx, (old_file, _) in enumerate(files, 1):
+                new_name = f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet"
+                if old_file != new_name:
+                    self.fs.rename(old_file, new_name)
+            files = [f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet" for idx in range(1, len(files) + 1)]
+        else:
+            files = self.fs.glob(f"{path}/*.parquet")
+            
+        logger.info(f"files in path: {files}")
+        for file in files:
             logger.info(f"files in path: {file}")
             num_files += 1
             try:
@@ -1182,7 +1216,11 @@ dataset: {self.name}
 
             # Upload files
             api.upload_folder(
-                folder_path=str(local_path), repo_id=repo_name, repo_type="dataset", token=token
+                folder_path=str(local_path),
+                repo_id=repo_name,
+                repo_type="dataset",
+                token=token,
+                delete_patterns=["*"],  # Delete all existing files before uploading
             )
 
             logger.info(f"Upload successful! Repository URL: {repo_url}")
