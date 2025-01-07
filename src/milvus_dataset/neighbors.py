@@ -152,19 +152,21 @@ class NeighborsComputation:
         metric_type (str): Distance metric to use (default: "cosine")
         max_rows_per_epoch (int): Maximum rows to process per epoch (default: 1000000)
         test_batch_size (int): Batch size for test data processing (default: 5000)
+        device (str): Device to use for computation ('cpu', 'cuda', or 'auto') (default: 'auto')
     """
 
     def __init__(
-        self,
-        dataset_dict: dict[str, "Dataset"],
-        vector_field_name: str,
-        pk_field_name: str = "id",
-        query_expr: str | None = None,
-        top_k: int = 1000,
-        metric_type: str = "cosine",
-        max_rows_per_epoch: int = 30000,
-        test_batch_size: int = 5000,
-    ) -> None:
+            self,
+            dataset_dict: dict[str, "Dataset"],
+            vector_field_name: str,
+            pk_field_name: str = "id",
+            query_expr: str | None = None,
+            top_k: int = 1000,
+            metric_type: str = "cosine",
+            max_rows_per_epoch: int = 30000,
+            test_batch_size: int = 5000,
+            device: str = "auto",
+        ) -> None:
         """Initialize the NeighborsComputation instance.
 
         Args:
@@ -176,6 +178,7 @@ class NeighborsComputation:
             metric_type (str): Distance metric to use (default: "cosine")
             max_rows_per_epoch (int): Maximum rows to process per epoch (default: 1000000)
             test_batch_size (int): Batch size for test data processing (default: 5000)
+            device (str): Device to use for computation ('cpu', 'cuda', or 'auto') (default: 'auto')
         """
         self.dataset_dict = dataset_dict
         self.vector_field_name = vector_field_name
@@ -187,15 +190,20 @@ class NeighborsComputation:
         self.test_batch_size = test_batch_size
         self.neighbors = self.dataset_dict["neighbors"]
         self.file_name = f"{self.neighbors.root_path}/{self.neighbors.name}/{self.neighbors.split}/neighbors-vector-{vector_field_name}-pk-{pk_field_name}-expr-{self.query_expr}-metric-{metric_type}.parquet"
-
-    def _calculate_num_epochs(self) -> int:
-        """Calculate the number of epochs needed for computation.
-
-        Returns:
-            int: Number of epochs
-        """
-        total_rows = self.dataset_dict["train"].get_total_rows("train")
-        return max(1, (total_rows + self.max_rows_per_epoch - 1) // self.max_rows_per_epoch)
+        
+        # Handle device selection
+        if device not in ["cpu", "cuda", "auto"]:
+            raise ValueError("Device must be one of: 'cpu', 'cuda', or 'auto'")
+        
+        self.device = device
+        if device == "auto":
+            self.use_gpu = GPU_AVAILABLE
+        elif device == "cuda":
+            if not GPU_AVAILABLE:
+                raise RuntimeError("CUDA device requested but GPU is not available")
+            self.use_gpu = True
+        else:  # device == "cpu"
+            self.use_gpu = False
 
     @staticmethod
     @nb.njit("int64[:,::1](float32[:,::1])", parallel=True)
@@ -232,7 +240,7 @@ class NeighborsComputation:
             test_emb = np.array(test_batch[vector_field_name].tolist())
             test_idx = test_batch[self.pk_field_name].tolist()
             
-            if GPU_AVAILABLE:
+            if self.use_gpu:
                 logger.info("Using GPU for neighbor computation")
                 test_emb_gpu = cp.array(test_emb, dtype=cp.float32)
                 train_emb_gpu = cp.array(train_emb, dtype=cp.float32)
