@@ -390,12 +390,12 @@ class Dataset:
                 total_size = 0
                 schema_dict = {}
                 num_files = 0
-                
+
                 if self.split in ['train', 'test']:
                     # Sort files by creation time
                     files = [(f, self.fs.info(f)['created']) for f in self.fs.glob(f"{path}/*.parquet")]
                     files.sort(key=lambda x: x[1])  # Sort by creation time
-                    
+
                     # Rename files according to their sorted order
                     for idx, (old_file, _) in enumerate(files, 1):
                         new_name = f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet"
@@ -404,7 +404,7 @@ class Dataset:
                     files = [f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet" for idx in range(1, len(files) + 1)]
                 else:
                     files = self.fs.glob(f"{path}/*.parquet")
-                    
+
                 logger.info(f"files in path {path}: {files}")
                 for file in files:
                     num_files += 1
@@ -547,7 +547,7 @@ class Dataset:
             # Sort files by creation time
             files = [(f, self.fs.info(f)['created']) for f in self.fs.glob(f"{path}/*.parquet")]
             files.sort(key=lambda x: x[1])  # Sort by creation time
-            
+
             # Rename files according to their sorted order
             for idx, (old_file, _) in enumerate(files, 1):
                 new_name = f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet"
@@ -556,7 +556,7 @@ class Dataset:
             files = [f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet" for idx in range(1, len(files) + 1)]
         else:
             files = self.fs.glob(f"{path}/*.parquet")
-            
+
         logger.info(f"files in path: {files}")
         for file in files:
             logger.info(f"files in path: {file}")
@@ -979,12 +979,12 @@ dataset: {self.name}
         Returns:
             pd.DataFrame: Benchmark results including QPS, latency, and recall metrics
         """
-        import multiprocessing as mp
-        from concurrent.futures import ProcessPoolExecutor, as_completed
-        from time import perf_counter, sleep
-        from tabulate import tabulate
-        import threading
         import queue
+        import threading
+        from concurrent.futures import ProcessPoolExecutor
+        from time import perf_counter, sleep
+
+        from tabulate import tabulate
 
         logger.info("Starting Milvus benchmark...")
         collection = Collection(collection_name)
@@ -1192,7 +1192,7 @@ dataset: {self.name}
             logger.info("Downloading dataset to local storage")
             self.to_storage(StorageConfig(storage_type=StorageType.LOCAL, root_path=local_path))
         api = HfApi()
-        token = os.environ.get("HF_TOKEN")      
+        token = os.environ.get("HF_TOKEN")
         if token is None:
             raise ValueError(
                 "Please provide a Hugging Face token or set the HF_TOKEN environment variable"

@@ -11,11 +11,10 @@ __all__ = [
 ]
 
 import concurrent.futures
-import time
 import math
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Tuple
 
 import numba as nb
 import numpy as np
@@ -37,7 +36,7 @@ except ImportError as e:
 
 
 @nb.njit(parallel=True)
-def process_neighbors_fast(ids: np.ndarray, distances: np.ndarray, top_k: int) -> Tuple[np.ndarray, np.ndarray]:
+def process_neighbors_fast(ids: np.ndarray, distances: np.ndarray, top_k: int) -> tuple[np.ndarray, np.ndarray]:
     """
     Fast processing of separate id and distance arrays using Numba.
 
@@ -68,7 +67,7 @@ def process_neighbors_fast(ids: np.ndarray, distances: np.ndarray, top_k: int) -
     return final_ids, final_distances
 
 
-def parallel_read_parquet(file_path: str, fs, pk_field_name: str) -> Tuple[np.ndarray, np.ndarray]:
+def parallel_read_parquet(file_path: str, fs, pk_field_name: str) -> tuple[np.ndarray, np.ndarray]:
     """
     Parallel reading of parquet files.
     """
@@ -409,7 +408,7 @@ class NeighborsComputation:
         logger.info("Cleaned up partial result files")
 
     def compute_ground_truth(self):
-        logger.info(f"Computing ground truth")
+        logger.info("Computing ground truth")
         start_time = time.time()
 
         # Get total counts directly

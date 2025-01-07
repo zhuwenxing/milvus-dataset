@@ -141,7 +141,7 @@ class DatasetWriter:
         verify_schema: bool = True,
     ) -> None:
         self.mode = mode
-        
+
 
         if isinstance(data, pd.DataFrame):
             self._write_dataframe(data)
