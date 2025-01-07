@@ -244,9 +244,9 @@ class NeighborsComputation:
             
             if self.use_gpu:
                 logger.info("Using GPU for neighbor computation")
-                test_emb_gpu = cp.array(test_emb, dtype=cp.float32)
-                train_emb_gpu = cp.array(train_emb, dtype=cp.float32)
                 try:
+                    test_emb_gpu = cp.array(test_emb, dtype=cp.float32)
+                    train_emb_gpu = cp.array(train_emb, dtype=cp.float32)
                     distance = cuvs_pairwise_distance(
                         train_emb_gpu, test_emb_gpu, metric=self.metric_type
                     )
@@ -256,7 +256,8 @@ class NeighborsComputation:
                     indices = distance_sorted_arg[:, : self.top_k]
                     distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
                     return indices, distances, test_idx, True
-                except cupy.cuda.memory.OutOfMemoryError:
+                except (cupy.cuda.memory.OutOfMemoryError, MemoryError) as e:
+                    logger.warning(f"GPU memory error occurred: {str(e)}")
                     return None, None, None, False
             else:
                 logger.info("Using CPU for neighbor computation")
