@@ -76,7 +76,6 @@ def parallel_read_parquet(file_path: str, fs, pk_field_name: str) -> tuple[np.nd
     return np.array(df[pk_field_name].tolist()), np.array(df["neighbors_id"].tolist())
 
 
-
 class TempFolderManager:
     """Manages temporary folders for neighbor computation results.
 
@@ -229,55 +228,88 @@ class NeighborsComputation:
             vector_field_name (str): Name of the field containing vector data
             tmp_path (str): Temporary path for storing intermediate results
         """
-        test_emb = np.array(test_data[vector_field_name].tolist())
-        train_emb = np.array(train_data[vector_field_name].tolist())
-
-        test_idx = test_data[self.pk_field_name].tolist()
-        train_idx = train_data[self.pk_field_name].tolist()
-
-        t0 = time.time()
-
-        if GPU_AVAILABLE:
-            logger.info("Using GPU for neighbor computation")
-            test_emb_gpu = cp.array(test_emb, dtype=cp.float32)
-            train_emb_gpu = cp.array(train_emb, dtype=cp.float32)
-            distance = cuvs_pairwise_distance(
-                train_emb_gpu, test_emb_gpu, metric=self.metric_type
-            )
-            distance = cp.asnumpy(distance)
-            distance = np.array(distance.T, order="C")
-            distance_sorted_arg = self.fast_sort(distance)
-            indices = distance_sorted_arg[:, : self.top_k]
-            distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
-
-        else:
-            logger.info("Using CPU for neighbor computation")
-            logger.info(f"test_emb shape: {test_emb.shape}, train_emb shape: {train_emb.shape}")
-            if self.metric_type == "inner_product":
-                # Compute inner product using matrix multiplication
-
-                distance = -1 * (train_emb @ test_emb.T)  # Transpose to get (num_test, num_train)
-
+        def process_batch(test_batch):
+            test_emb = np.array(test_batch[vector_field_name].tolist())
+            test_idx = test_batch[self.pk_field_name].tolist()
+            
+            if GPU_AVAILABLE:
+                logger.info("Using GPU for neighbor computation")
+                test_emb_gpu = cp.array(test_emb, dtype=cp.float32)
+                train_emb_gpu = cp.array(train_emb, dtype=cp.float32)
+                try:
+                    distance = cuvs_pairwise_distance(
+                        train_emb_gpu, test_emb_gpu, metric=self.metric_type
+                    )
+                    distance = cp.asnumpy(distance)
+                    distance = np.array(distance.T, order="C")
+                    distance_sorted_arg = self.fast_sort(distance)
+                    indices = distance_sorted_arg[:, : self.top_k]
+                    distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
+                    return indices, distances, test_idx, True
+                except cupy.cuda.memory.OutOfMemoryError:
+                    return None, None, None, False
             else:
-                distance = pairwise_distances(train_emb, Y=test_emb, metric=self.metric_type, n_jobs=-1)
-            logger.info(f"distance matrix shape: {distance.shape}")
-            distance = np.array(distance.T, order="C", dtype=np.float32)
-            distance_sorted_arg = self.fast_sort(distance)
-            indices = distance_sorted_arg[:, : self.top_k]
-            distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
+                logger.info("Using CPU for neighbor computation")
+                if self.metric_type == "inner_product":
+                    distance = -1 * (train_emb @ test_emb.T)
+                else:
+                    distance = pairwise_distances(train_emb, Y=test_emb, metric=self.metric_type, n_jobs=-1)
+                distance = np.array(distance.T, order="C", dtype=np.float32)
+                distance_sorted_arg = self.fast_sort(distance)
+                indices = distance_sorted_arg[:, : self.top_k]
+                distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
+                return indices, distances, test_idx, True
 
+        train_emb = np.array(train_data[vector_field_name].tolist())
+        train_idx = train_data[self.pk_field_name].tolist()
+        
+        t0 = time.time()
+        current_batch_size = len(test_data)
+        min_batch_size = 100  # Minimum batch size to prevent infinite loops
+        
+        while current_batch_size >= min_batch_size:
+            all_indices = []
+            all_distances = []
+            all_test_idx = []
+            success = True
+            
+            for start_idx in range(0, len(test_data), current_batch_size):
+                end_idx = min(start_idx + current_batch_size, len(test_data))
+                test_batch = test_data.iloc[start_idx:end_idx]
+                
+                indices, distances, test_idx, batch_success = process_batch(test_batch)
+                
+                if not batch_success:
+                    success = False
+                    current_batch_size = current_batch_size // 2
+                    logger.info(f"Reducing batch size to {current_batch_size} due to GPU memory constraints")
+                    break
+                
+                all_indices.extend(indices)
+                all_distances.extend(distances)
+                all_test_idx.extend(test_idx)
+            
+            if success:
+                break
+                
+        if current_batch_size < min_batch_size:
+            raise RuntimeError("Unable to process even with minimum batch size. Consider using CPU mode or reducing data dimensionality.")
+
+        logger.info(f"Final batch size: {current_batch_size}")
         logger.info(f"Neighbor computation cost time: {time.time() - t0}")
 
+        all_indices = np.array(all_indices)
+        all_distances = np.array(all_distances)
+        
         result = np.empty(
-            indices.shape, dtype=[(self.pk_field_name, "int64"), ("distance", "float64")]
+            all_indices.shape, dtype=[(self.pk_field_name, "int64"), ("distance", "float64")]
         )
-        for i in range(indices.shape[0]):
-            for j in range(indices.shape[1]):
-                result[i, j] = (train_idx[indices[i, j]], distances[i, j])
+        for i in range(all_indices.shape[0]):
+            for j in range(all_indices.shape[1]):
+                result[i, j] = (train_idx[all_indices[i, j]], all_distances[i, j])
 
-        df_neighbors = pd.DataFrame({self.pk_field_name: test_idx, "neighbors_id": result.tolist()})
-        logger.info(f"Writing neighbors to {tmp_path}")
-        # 使用TempFolderManager的ensure_dir方法
+        df_neighbors = pd.DataFrame({self.pk_field_name: all_test_idx, "neighbors_id": result.tolist()})
+        
         temp_manager = TempFolderManager(self.neighbors)
         file_num = temp_manager.ensure_dir(tmp_path)
         file_name = f"{tmp_path}/neighbors_{file_num}.parquet"
