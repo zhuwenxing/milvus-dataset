@@ -192,11 +192,11 @@ class NeighborsComputation:
         self.test_batch_size = test_batch_size
         self.neighbors = self.dataset_dict["neighbors"]
         self.file_name = f"{self.neighbors.root_path}/{self.neighbors.name}/{self.neighbors.split}/neighbors-vector-{vector_field_name}-pk-{pk_field_name}-expr-{self.query_expr}-metric-{metric_type}.parquet"
-        
+
         # Handle device selection
         if device not in ["cpu", "cuda", "auto"]:
             raise ValueError("Device must be one of: 'cpu', 'cuda', or 'auto'")
-        
+
         self.device = device
         if device == "auto":
             self.use_gpu = GPU_AVAILABLE
@@ -241,7 +241,7 @@ class NeighborsComputation:
         def process_batch(test_batch):
             test_emb = np.array(test_batch[vector_field_name].tolist())
             test_idx = test_batch[self.pk_field_name].tolist()
-            
+
             if self.use_gpu:
                 logger.info("Using GPU for neighbor computation")
                 try:
@@ -273,37 +273,38 @@ class NeighborsComputation:
 
         train_emb = np.array(train_data[vector_field_name].tolist())
         train_idx = train_data[self.pk_field_name].tolist()
-        
+
         t0 = time.time()
         current_batch_size = len(test_data)
-        min_batch_size = 100  # Minimum batch size to prevent infinite loops
-        
+        min_batch_size = min(100, current_batch_size)  # Minimum batch size to prevent infinite loops
+        logger.info(f"Starting neighbor computation with batch size: {current_batch_size}, min batch size: {min_batch_size}")
         while current_batch_size >= min_batch_size:
             all_indices = []
             all_distances = []
             all_test_idx = []
             success = True
-            
+
             for start_idx in range(0, len(test_data), current_batch_size):
                 end_idx = min(start_idx + current_batch_size, len(test_data))
                 test_batch = test_data.iloc[start_idx:end_idx]
-                
+
                 indices, distances, test_idx, batch_success = process_batch(test_batch)
-                
+
                 if not batch_success:
                     success = False
                     current_batch_size = current_batch_size // 2
                     logger.info(f"Reducing batch size to {current_batch_size} due to GPU memory constraints")
                     break
-                
+
                 all_indices.extend(indices)
                 all_distances.extend(distances)
                 all_test_idx.extend(test_idx)
-            
+
             if success:
                 break
-                
+
         if current_batch_size < min_batch_size:
+            logger.info(f"current_batch_size: {current_batch_size}, min_batch_size: {min_batch_size}")
             raise RuntimeError("Unable to process even with minimum batch size. Consider using CPU mode or reducing data dimensionality.")
 
         logger.info(f"Final batch size: {current_batch_size}")
@@ -311,7 +312,7 @@ class NeighborsComputation:
 
         all_indices = np.array(all_indices)
         all_distances = np.array(all_distances)
-        
+
         result = np.empty(
             all_indices.shape, dtype=[(self.pk_field_name, "int64"), ("distance", "float64")]
         )
@@ -320,7 +321,7 @@ class NeighborsComputation:
                 result[i, j] = (train_idx[all_indices[i, j]], all_distances[i, j])
 
         df_neighbors = pd.DataFrame({self.pk_field_name: all_test_idx, "neighbors_id": result.tolist()})
-        
+
         temp_manager = TempFolderManager(self.neighbors)
         file_num = temp_manager.ensure_dir(tmp_path)
         file_name = f"{tmp_path}/neighbors_{file_num}.parquet"

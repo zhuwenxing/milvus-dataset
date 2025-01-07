@@ -34,8 +34,8 @@ lint = [
 ]
 test = [
     "pytest>=8.3.4",
+    "pytest-cov>=4.1.0",
 ]
-
 dev = [
     "mkdocs-material>=9.5.49",
     "mkdocstrings[python]>=0.27.0",
@@ -78,5 +78,6 @@ version_format = "src.version:format_version"
 [tool.pdm.scripts]
 web = "streamlit run src/milvus_dataset/web/app.py"
 api = "uvicorn src.milvus_dataset.api.main:app --reload --port 8000"
+test = "pytest tests --cov=milvus_dataset --cov-report=term-missing"
 docs = "mkdocs serve"
 docs-build = "mkdocs build"
