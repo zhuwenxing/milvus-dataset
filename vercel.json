@@ -2,5 +2,11 @@
     "buildCommand": "mkdocs build",
     "outputDirectory": "site",
     "framework": null,
-    "installCommand": "pip install -r doc-requirements.txt"
+    "installCommand": "pip install -r doc-requirements.txt",
+    "builds": [
+        {
+            "src": "**",
+            "use": "@vercel/python"
+        }
+    ]
 }
