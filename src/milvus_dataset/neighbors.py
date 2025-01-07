@@ -15,6 +15,8 @@ import time
 import math
 from collections.abc import Generator
 from contextlib import contextmanager
+from typing import Tuple
+
 import numba as nb
 import numpy as np
 import pandas as pd
@@ -32,6 +34,48 @@ try:
 except ImportError as e:
     logger.info(f"import failed with error {e}")
     GPU_AVAILABLE = False
+
+
+@nb.njit(parallel=True)
+def process_neighbors_fast(ids: np.ndarray, distances: np.ndarray, top_k: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Fast processing of separate id and distance arrays using Numba.
+
+    Args:
+        ids: numpy array containing neighbor ids
+        distances: numpy array containing corresponding distances
+        top_k: number of top neighbors to keep
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: Sorted arrays for ids and distances
+    """
+    n = ids.shape[0]  # number of rows
+    m = min(ids.shape[1], top_k)  # number of columns to keep
+
+    # Pre-allocate output arrays
+    final_ids = np.empty((n, m), dtype=np.int64)
+    final_distances = np.empty((n, m), dtype=np.float64)
+
+    # Process each row in parallel
+    for i in nb.prange(n):
+        # Get sort indices for this row
+        sort_idx = np.argsort(distances[i, :])[:m]
+
+        # Store sorted results
+        final_ids[i] = ids[i, sort_idx]
+        final_distances[i] = distances[i, sort_idx]
+
+    return final_ids, final_distances
+
+
+def parallel_read_parquet(file_path: str, fs, pk_field_name: str) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Parallel reading of parquet files.
+    """
+    with fs.open(file_path, "rb") as f:
+        df = pq.read_table(f).to_pandas()
+    return np.array(df[pk_field_name].tolist()), np.array(df["neighbors_id"].tolist())
+
 
 
 class TempFolderManager:
@@ -242,86 +286,81 @@ class NeighborsComputation:
         with self.neighbors.fs.open(file_name, "wb") as f:
             df_neighbors.to_parquet(f, engine="pyarrow", compression="snappy")
 
-    def merge_neighbors(
-        self, final_file_name: str | None = None, tmp_path: str | None = None
-    ) -> str:
-        """Merge intermediate neighbor results.
-
-        Args:
-            final_file_name (Optional[str]): Final output file name
-            tmp_path (Optional[str]): Temporary path for storing intermediate results
-
-        Returns:
-            str: Final output file name
-        """
+    def merge_neighbors(self, final_file_name: str | None = None, tmp_path: str | None = None) -> str:
+        """Merge intermediate neighbor results with separate id and distance handling."""
         t_start = time.time()
-        neighbors = self.dataset_dict["neighbors"]
-        file_list = neighbors.fs.glob(f"{tmp_path}/*.parquet")
-        logger.info(f"Found {len(file_list)} in {tmp_path}")
-        neighbors_id = None
-        test_idx = None
+        file_list = self.neighbors.fs.glob(f"{tmp_path}/*.parquet")
+        logger.info(f"Starting parallel file reading for {len(file_list)} files...")
 
-        # Read and merge files
-        t_read_start = time.time()
-        for f in file_list:
-            with neighbors.fs.open(f, "rb") as f:
-                df_n = pq.read_table(f).to_pandas()
-            test_idx = np.array(df_n[self.pk_field_name].tolist())
-            tmp_neighbors_id = np.array(df_n["neighbors_id"].tolist())
-            if neighbors_id is None:
-                neighbors_id = tmp_neighbors_id
-            else:
-                neighbors_id = np.concatenate((neighbors_id, tmp_neighbors_id), axis=1)
-        logger.info(f"Reading and merging files took: {time.time() - t_read_start:.3f}s")
+        # Parallel file reading
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [
+                executor.submit(parallel_read_parquet, f, self.neighbors.fs, self.pk_field_name)
+                for f in file_list
+            ]
+            results = list(tqdm(
+                concurrent.futures.as_completed(futures),
+                total=len(futures),
+                desc="Reading files"
+            ))
 
-        # Create result array
-        t_result_start = time.time()
-        result = np.empty(
-            neighbors_id.shape, dtype=[(self.pk_field_name, "int64"), ("distance", "float64")]
-        )
-        for index, _value in np.ndenumerate(neighbors_id):
-            result[index] = (neighbors_id[index][0], neighbors_id[index][1])
-        logger.info(f"Creating result array took: {time.time() - t_result_start:.3f}s")
+        # Combine results and separate ids and distances
+        test_idx = results[0].result()[0]  # Use first file's test_idx
+        neighbors_arrays = [f.result()[1] for f in results]
 
-        # Sort results
-        t_sort_start = time.time()
-        sorted_result = np.sort(result, axis=1, order=["distance"])
-        logger.info(f"Sorting results took: {time.time() - t_sort_start:.3f}s")
+        # Extract ids and distances from the structured arrays
+        total_neighbors = sum(arr.shape[1] for arr in neighbors_arrays)
+        ids = np.empty((len(test_idx), total_neighbors), dtype=np.int64)
+        distances = np.empty((len(test_idx), total_neighbors), dtype=np.float64)
 
-        # Process final results
-        t_process_start = time.time()
-        final_result = np.empty(sorted_result.shape, dtype="i8")
-        for index, _value in np.ndenumerate(sorted_result):
-            final_result[index] = sorted_result[index][0]
-        final_distance = np.empty(sorted_result.shape, dtype="f8")
-        for index, _value in np.ndenumerate(sorted_result):
-            final_distance[index] = sorted_result[index][1]
-        logger.info(f"Processing final results took: {time.time() - t_process_start:.3f}s")
+        current_col = 0
+        for arr in neighbors_arrays:
+            cols = arr.shape[1]
+            for i in range(len(test_idx)):
+                for j in range(cols):
+                    ids[i, current_col + j] = arr[i, j][0]  # id
+                    distances[i, current_col + j] = arr[i, j][1]  # distance
+            current_col += cols
 
-        # Create DataFrame
-        t_df_start = time.time()
-        df = pd.DataFrame(
-            data={
-                "idx": test_idx,
-                "neighbors_id": final_result[:, : self.top_k].tolist(),
-                "distance": final_distance[:, : self.top_k].tolist(),
-                "metric": [self.metric_type for _ in range(len(test_idx))],
-                "query_expr": [self.query_expr for _ in range(len(test_idx))],
-                "pk_field_name": [self.pk_field_name for _ in range(len(test_idx))],
-                "vector_field_name": [self.vector_field_name for _ in range(len(test_idx))],
-                "top_k": [self.top_k for _ in range(len(test_idx))],
-            }
-        )
-        logger.info(f"Creating DataFrame took: {time.time() - t_df_start:.3f}s")
+        logger.info(f"File reading and merging completed in {time.time() - t_start:.3f}s")
+
+        # Process and sort neighbors using separate arrays
+        t_process = time.time()
+        final_ids, final_distances = process_neighbors_fast(ids, distances, self.top_k)
+        logger.info(f"Processing and sorting completed in {time.time() - t_process:.3f}s")
+
+        # # Create final structured array for the DataFrame
+        # neighbors_result = np.empty(final_ids.shape, dtype=[('id', 'int64'), ('distance', 'float64')])
+        # for i in range(final_ids.shape[0]):
+        #     for j in range(final_ids.shape[1]):
+        #         neighbors_result[i, j] = (final_ids[i, j], final_distances[i, j])
+
+        # Create DataFrame efficiently
+        t_df = time.time()
+        df = pd.DataFrame({
+            "idx": test_idx,
+            "neighbors_id": final_ids.tolist(),
+            "neighbors_distance": final_distances.tolist(),
+            "metric": self.metric_type,
+            "query_expr": self.query_expr,
+            "pk_field_name": self.pk_field_name,
+            "vector_field_name": self.vector_field_name,
+            "top_k": self.top_k
+        })
+        logger.info(f"DataFrame creation completed in {time.time() - t_df:.3f}s")
 
         # Write results
-        t_write_start = time.time()
-        logger.info(f"Writing neighbors to {final_file_name}")
-        with neighbors.fs.open(final_file_name, "wb") as f:
-            df.to_parquet(f, engine="pyarrow", compression="snappy")
-        logger.info(f"Writing results took: {time.time() - t_write_start:.3f}s")
-        
-        logger.info(f"Total merge time: {time.time() - t_start:.3f}s")
+        t_write = time.time()
+        with self.neighbors.fs.open(final_file_name, "wb") as f:
+            df.to_parquet(
+                f,
+                engine="pyarrow",
+                compression="snappy",
+                use_dictionary=False,
+                row_group_size=100000
+            )
+        logger.info(f"File writing completed in {time.time() - t_write:.3f}s")
+
         return final_file_name
 
     def merge_final_results(self, partial_files: list[str]) -> None:
@@ -376,11 +415,11 @@ class NeighborsComputation:
         # Get total counts directly
         total_test_rows = len(self.dataset_dict['test'])
         total_train_rows = len(self.dataset_dict['train'])
-        
+
         # Calculate expected number of batches using math.ceil
         test_count = math.ceil(total_test_rows / self.test_batch_size)
         train_count = math.ceil(total_train_rows / self.max_rows_per_epoch)
-        
+
         logger.info(f"Total test batches: {test_count}, total test rows: {total_test_rows}")
         logger.info(f"Total train batches: {train_count}, total train rows: {total_train_rows}")
 
@@ -398,7 +437,7 @@ class NeighborsComputation:
                 progress = (processed_test_rows / total_test_rows) * 100
                 elapsed_time = time.time() - start_time
                 eta = (elapsed_time / processed_test_rows) * (total_test_rows - processed_test_rows) if processed_test_rows > 0 else 0
-                
+
                 logger.info(f"Processing test batch {i+1}/{test_count} ({progress:.2f}% complete)")
                 logger.info(f"Test batch size: {len(test_data)}, Elapsed: {elapsed_time:.2f}s, ETA: {eta:.2f}s")
 
@@ -417,13 +456,13 @@ class NeighborsComputation:
                     merged_file_name = f"{tmp_path}/neighbors-{self.query_expr}-{i}.parquet"
                     partial_file = self.merge_neighbors(merged_file_name, tmp_test_split_path)
                     partial_files.append(partial_file)
-                    
+
                 batch_time = time.time() - batch_start_time
                 logger.info(f"Completed test batch {i+1} in {batch_time:.2f}s")
 
             total_time = time.time() - start_time
             logger.info(f"All test batches processed in {total_time:.2f}s")
             self.merge_final_results(partial_files)
-            
+
         final_time = time.time() - start_time
         logger.info(f"Ground truth computation completed in {final_time:.2f}s")
