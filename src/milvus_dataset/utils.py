@@ -685,7 +685,7 @@ class ModelScopeDatasetUploader:
             self.logger.error(f"Failed to copy files: {e}")
             return False
 
-    def upload(self, src_path: str | Path, commit_message: str = None) -> tuple[bool, str]:
+    def upload(self, src_path: str | Path, commit_message: str | None = None) -> tuple[bool, str]:  # noqa C901
         """
         Upload file or directory to repository
 

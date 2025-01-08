@@ -951,12 +951,12 @@ dataset: {self.name}
             f"Dataset '{self.name}' has been successfully written to Milvus collection '{collection_name}'"
         )
 
-    def benchmark_milvus(
+    def benchmark_milvus( # noqa: C901
         self,
         collection_name: str,
-        search_params: dict = None,
+        search_params: dict | None = None,
         rounds: int = 3,
-        top_k: int = None,
+        top_k: int | None = None,
         min_concurrent: int = 1,
         max_concurrent: int = 32,
         concurrent_step: int = 2,
@@ -1057,7 +1057,7 @@ dataset: {self.name}
                     continue
                 gt_row = neighbors_data[neighbors_data["idx"] == query_idx]
                 gt_neighbors = set(gt_row.iloc[0]["neighbors_id"])
-                milvus_neighbors = set([hit.entity.get("idx") for hit in hits])
+                milvus_neighbors = {hit.entity.get("idx") for hit in hits}
                 recall = len(gt_neighbors.intersection(milvus_neighbors)) / len(gt_neighbors)
                 recall_sum += recall
                 valid_results += 1
@@ -1078,7 +1078,7 @@ dataset: {self.name}
             # Split test vectors for parallel processing
             chunk_size = max(1, len(test_vectors) // num_workers)
             vector_chunks = [
-                [vec for vec in test_vectors[i : i + chunk_size]]  # Convert each vector to a list
+                list(test_vectors[i: i + chunk_size])  # Convert each vector to a list
                 for i in range(0, len(test_vectors), chunk_size)
             ]
 
@@ -1094,7 +1094,7 @@ dataset: {self.name}
 
                 # Start workers
                 with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                    futures = [
+                    for i, chunk in enumerate(vector_chunks):
                         executor.submit(
                             search_worker,
                             chunk,
@@ -1104,9 +1104,6 @@ dataset: {self.name}
                             stop_event,
                             result_queue,
                         )
-                        for i, chunk in enumerate(vector_chunks)
-                    ]
-
                     # Wait for all workers to be ready
                     logger.info("Waiting for workers to be ready...")
                     for event in ready_events:

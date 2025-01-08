@@ -9,13 +9,15 @@ for different use cases.
 __all__ = ["DatasetReader"]
 
 from collections.abc import Generator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 import pyarrow.parquet as pq
 
 from .log_config import logger
 
+if TYPE_CHECKING:
+    from .core import Dataset
 
 class DatasetReader:
     """A class for reading data from a dataset.

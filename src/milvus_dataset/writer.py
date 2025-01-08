@@ -16,8 +16,13 @@ import time
 import uuid
 from datetime import datetime, timezone
 from queue import Queue
+from typing import TYPE_CHECKING
 
 import pandas as pd
+
+if TYPE_CHECKING:
+    from .core import Dataset
+
 
 from .log_config import logger
 

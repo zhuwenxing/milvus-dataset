@@ -15,6 +15,7 @@ import math
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 import numba as nb
 import numpy as np
@@ -22,6 +23,9 @@ import pandas as pd
 import pyarrow.parquet as pq
 from sklearn.metrics.pairwise import pairwise_distances
 from tqdm import tqdm
+
+if TYPE_CHECKING:
+    from .core import Dataset
 
 from .log_config import logger
 
@@ -223,7 +227,7 @@ class NeighborsComputation:
             b[i, :] = np.argsort(a[i, :])
         return b
 
-    def compute_neighbors(
+    def compute_neighbors( # noqa
         self,
         test_data: pd.DataFrame,
         train_data: pd.DataFrame,
@@ -257,7 +261,7 @@ class NeighborsComputation:
                     distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
                     return indices, distances, test_idx, True
                 except (cupy.cuda.memory.OutOfMemoryError, MemoryError) as e:
-                    logger.warning(f"GPU memory error occurred: {str(e)}")
+                    logger.warning(f"GPU memory error occurred: {e!s}")
                     return None, None, None, False
             else:
                 logger.info("Using CPU for neighbor computation")

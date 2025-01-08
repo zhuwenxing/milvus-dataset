@@ -114,7 +114,7 @@ async def get_dataset(name: str, split: str | None = None):
         else:
             return {"name": dataset.name, "split": dataset.split, "summary": dataset.summary()}
     except Exception as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @app.post("/datasets/{name}/write")
@@ -148,7 +148,7 @@ async def read_dataset(name: str, split: str = "train", mode: str = "full", batc
 
         return {"data": data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post("/datasets/{name}/generate")
@@ -231,7 +231,7 @@ async def dataset_to_huggingface(name: str, config: HuggingFaceConfigModel):
 
         return {"message": f"Dataset '{name}' successfully pushed to HuggingFace Hub"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/datasets/{name}/metadata")
@@ -242,7 +242,7 @@ async def get_dataset_metadata(name: str):
             return dataset.get_metadata()
         raise HTTPException(status_code=400, detail="Dataset must be a DatasetDict")
     except Exception as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 if __name__ == "__main__":

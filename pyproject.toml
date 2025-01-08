@@ -74,10 +74,12 @@ distribution = true
 [tool.pdm.version]
 source = "scm"
 version_format = "src.version:format_version"
+write_to = "milvus_dataset/__version__.py"
+write_template = "__version__ = '{}'"
 
 [tool.pdm.scripts]
 web = "streamlit run src/milvus_dataset/web/app.py"
 api = "uvicorn src.milvus_dataset.api.main:app --reload --port 8000"
-test = "pytest tests --cov=milvus_dataset --cov-report=term-missing"
+test = "pytest tests --cov=milvus_dataset --cov-report=xml --cov-report=html --cov-report=term-missing"
 docs = "mkdocs serve"
 docs-build = "mkdocs build"

@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 from pymilvus import CollectionSchema, DataType, FieldSchema
 
-from milvus_dataset import ConfigManager, StorageConfig, StorageType, list_datasets, load_dataset
+from milvus_dataset import ConfigManager, StorageType, list_datasets, load_dataset
 
 
 class TestLocalDatasetE2E:
@@ -96,7 +96,7 @@ class TestLocalDatasetE2E:
         # Read and verify data
         loaded_data = dataset["train"].read(mode="full")
         assert len(loaded_data) == num_samples
-        assert all(isinstance(id_, (int, np.integer)) for id_ in loaded_data["idx"])
+        assert all(isinstance(id_, int | np.integer) for id_ in loaded_data["idx"])
         assert all(isinstance(chunk_id, str) for chunk_id in loaded_data["chunk_id"])
         assert all(isinstance(url, str) for url in loaded_data["url"])
         assert all(isinstance(title, str) for title in loaded_data["title"])
