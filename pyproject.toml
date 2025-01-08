@@ -77,7 +77,7 @@ distribution = true
 source = "scm"
 version_format = "src.version:format_version"
 write_to = "milvus_dataset/__version__.py"
-write_template = "__version__ = '{}'"
+write_template = "__version__ = '{}'\n"
 
 [tool.pdm.scripts]
 web = "streamlit run src/milvus_dataset/web/app.py"

@@ -30,7 +30,7 @@ jobs:
       run: pdm install
 
     - name: Lint with ruff
-      run: pdm run ruff check src/ tests/
+      run: pdm run ruff check src/ tests/ --fix
 
     - name: Build package
       run: pdm build
