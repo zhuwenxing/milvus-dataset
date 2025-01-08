@@ -23,7 +23,7 @@ jobs:
     - name: Build and publish
       env:
         PDM_PUBLISH_USERNAME: __token__
-        PDM_PUBLISH_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        PDM_PUBLISH_PASSWORD: ${{ secrets.PYPI_TOKEN }}
       run: |
         pdm build
         pdm publish
