@@ -105,10 +105,7 @@ def gen_bf16_vectors(nb, dim):
     return bf16_vectors
 
 
-def gen_row_data_by_schema(nb=3000, schema=None, start=None):
-    if schema is None:
-        raise Exception("schema is None")
-    # ignore auto id field and the fields in function output
+def get_fields_needs_data(schema):
     func_output_fields = []
     if hasattr(schema, "functions"):
         functions = schema.functions
@@ -124,6 +121,13 @@ def gen_row_data_by_schema(nb=3000, schema=None, start=None):
         if field.name in func_output_fields:
             continue
         fields_needs_data.append(field)
+
+
+def gen_row_data_by_schema(nb=3000, schema=None, start=None):
+    if schema is None:
+        raise Exception("schema is None")
+    # ignore auto id field and the fields in function output
+    fields_needs_data = get_fields_needs_data(schema)
     data = []
     for _ in range(nb):
         tmp = {}

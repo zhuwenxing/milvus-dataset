@@ -18,7 +18,12 @@ from datetime import datetime, timezone
 from queue import Queue
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
+from ml_dtypes import bfloat16
+from pymilvus import DataType
+
+from .utils import get_fields_needs_data
 
 if TYPE_CHECKING:
     from .core import Dataset
@@ -143,7 +148,6 @@ class DatasetWriter:
         self,
         data: pd.DataFrame | dict | list[dict],
         mode: str = "append",
-        verify_schema: bool = True,
     ) -> None:
         self.mode = mode
 
@@ -155,11 +159,118 @@ class DatasetWriter:
         elif isinstance(data, list):
             self._write_list(data)
         else:
-            raise ValueError("Unsupported data type. Expected DataFrame, Dict, or List[Dict].")
-        # self.dataset.summary()
+            raise ValueError(f"Unsupported data type: {type(data)}")
+
+    def process_special_data_types(self, df: pd.DataFrame) -> pd.DataFrame:
+        # 对一些数据类型进行特殊处理
+        fields_needs_data = get_fields_needs_data(self.dataset.schema)
+
+        for field in fields_needs_data:
+            if field.dtype == DataType.JSON:
+                df[field.name] = df[field.name].apply(self._convert_json)
+            elif field.dtype == DataType.ARRAY and field.element_type == DataType.JSON:
+                df[field.name] = df[field.name].apply(self._convert_json_array)
+            elif field.dtype == DataType.FLOAT16_VECTOR:
+                dim = field.params["dim"]
+                df[field.name] = df[field.name].apply(lambda x: self._convert_float16_vector(x, dim))
+            elif field.dtype == DataType.BFLOAT16_VECTOR:
+                dim = field.params["dim"]
+                df[field.name] = df[field.name].apply(lambda x: self._convert_bfloat16_vector(x, dim))
+            elif field.dtype == DataType.BINARY_VECTOR:
+                dim = field.params["dim"]
+                df[field.name] = df[field.name].apply(lambda x: self._convert_binary_vector(x, dim))
+            elif field.dtype == DataType.SPARSE_FLOAT_VECTOR:
+                df[field.name] = df[field.name].apply(lambda x: json.dumps(x))
+            else:
+                continue
+        return df
+
+    def _convert_binary_vector(self, x, dim):
+        """
+        Convert binary vector input to uint8 array.
+        Input can be:
+        1. List/array of 0s and 1s with length dim
+        2. List/array of uint8 numbers with length dim/8
+        3. Bytes object with length dim/8
+        """
+        if isinstance(x, bytes):
+            if len(x) != dim // 8:
+                raise ValueError(f"Bytes length must be {dim//8} for {dim}-dimensional binary vector, got {len(x)}")
+            return np.frombuffer(x, dtype=np.uint8)
+        x = np.array(x)
+        if len(x) == dim:  # 0/1 sequence
+            if not np.all(np.isin(x, [0, 1])):
+                raise ValueError("Binary vector must contain only 0s and 1s")
+            return np.packbits(x.astype(bool))
+        elif len(x) == dim // 8:  # uint8 array
+            if not np.all((x >= 0) & (x <= 255)):
+                raise ValueError("Binary vector values must be between 0 and 255")
+            return x.astype(np.uint8)
+        else:
+            raise ValueError(f"Vector length must be either {dim} (0/1 values) or {dim//8} (uint8 values), got {len(x)}")
+
+    def _convert_float16_vector(self, x, dim):
+        """
+        Convert vector to float16 format.
+        If len(x) == dim*2 (already uint8), return as is.
+        If len(x) == dim, convert to float16 and view as uint8.
+        Otherwise raise error.
+        """
+        x = np.array(x)
+        if len(x) == dim * 2:  # already uint8
+            if not np.all((x >= 0) & (x <= 255)):
+                raise ValueError("uint8 vector values must be between 0 and 255")
+            return x.astype(np.uint8)
+        elif len(x) == dim:  # need conversion
+            return np.array(x, dtype=np.float16).view(np.uint8)
+        else:
+            raise ValueError(f"Vector length must be either {dim} (float values) or {dim*2} (uint8 values), got {len(x)}")
+
+    def _convert_bfloat16_vector(self, x, dim):
+        """
+        Convert vector to bfloat16 format.
+        If len(x) == dim*2 (already uint8), return as is.
+        If len(x) == dim, convert to bfloat16 and view as uint8.
+        Otherwise raise error.
+        """
+        x = np.array(x)
+        if len(x) == dim * 2:  # already uint8
+            if not np.all((x >= 0) & (x <= 255)):
+                raise ValueError("uint8 vector values must be between 0 and 255")
+            return x.astype(np.uint8)
+        elif len(x) == dim:  # need conversion
+            return np.array(x, dtype=bfloat16).view(np.uint8)
+        else:
+            raise ValueError(f"Vector length must be either {dim} (float values) or {dim*2} (uint8 values), got {len(x)}")
+
+    def _convert_json(self, x):
+        """
+        Convert data to JSON string if it's not already a JSON string.
+        """
+        if x is None:
+            return None
+        if isinstance(x, str):
+            try:
+                # 尝试解析 如果是有效的JSON字符串就直接返回
+                json.loads(x)
+                return x
+            except json.JSONDecodeError:
+                # 不是有效的JSON字符串 需要转换
+                return json.dumps(x)
+        return json.dumps(x)
+
+    def _convert_json_array(self, x):
+        """
+        Convert array of data to array of JSON strings.
+        """
+        if x is None:
+            return None
+        return [self._convert_json(item) for item in x]
 
     def _write_dataframe(self, df: pd.DataFrame) -> None:
         # logger.info(f"Writing {len(df)} rows to dataset")
+        # 对一些数据类型进行特殊处理
+        df = self.process_special_data_types(df)
         self.dataset.verify_schema(df)
         if self.rows_per_file is None:
             self.rows_per_file = self._estimate_rows_per_file(df)

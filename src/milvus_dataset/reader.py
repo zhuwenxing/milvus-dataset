@@ -8,13 +8,18 @@ for different use cases.
 
 __all__ = ["DatasetReader"]
 
+import json
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
+from ml_dtypes import bfloat16
+from pymilvus import DataType
 
 from .log_config import logger
+from .utils import get_fields_needs_data
 
 if TYPE_CHECKING:
     from .core import Dataset
@@ -73,11 +78,64 @@ class DatasetReader:
             logger.exception(f"Unexpected error reading dataset: path={path}, error={e!s}")
             raise
 
+    def process_special_data_types(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        将特殊数据类型转换回原始格式
+        - JSON字符串转回字典
+        - FLOAT16_VECTOR从uint8转回float16数组
+        - BFLOAT16_VECTOR从uint8转回bfloat16数组
+        - BINARY_VECTOR从uint8转回原始二进制数组
+        """
+        fields_needs_data = get_fields_needs_data(self.dataset.schema)
+
+        for field in fields_needs_data:
+            if field.name not in df.columns:
+                continue
+            if field.dtype == DataType.JSON:
+                df[field.name] = df[field.name].apply(self._convert_from_json)
+            elif field.dtype == DataType.ARRAY and field.element_type == DataType.JSON:
+                df[field.name] = df[field.name].apply(self._convert_from_json_array)
+            elif field.dtype == DataType.FLOAT16_VECTOR:
+                dim = field.params["dim"]
+                df[field.name] = df[field.name].apply(lambda x: self._convert_from_float16_vector(x, dim))
+            elif field.dtype == DataType.BFLOAT16_VECTOR:
+                dim = field.params["dim"]
+                df[field.name] = df[field.name].apply(lambda x: self._convert_from_bfloat16_vector(x, dim))
+            elif field.dtype == DataType.BINARY_VECTOR:
+                dim = field.params["dim"]
+                df[field.name] = df[field.name].apply(lambda x: self._convert_from_binary_vector(x, dim))
+            elif field.dtype == DataType.SPARSE_FLOAT_VECTOR:
+                df[field.name] = df[field.name].apply(self._convert_from_json)
+        return df
+
+    def _convert_from_json(self, x):
+        if x is None:
+            return None
+        return json.loads(x)
+
+    def _convert_from_json_array(self, x):
+        if x is None:
+            return None
+        return [self._convert_from_json(item) for item in x]
+
+    def _convert_from_float16_vector(self, x):
+        x = np.array(x, dtype=np.uint8)
+        return x.view(np.float16)
+
+    def _convert_from_bfloat16_vector(self, x):
+        x = np.array(x, dtype=np.uint8)
+        return x.view(bfloat16)
+
+    def _convert_from_binary_vector(self, x):
+        x = np.array(x, dtype=np.uint8)
+        return np.unpackbits(x)
+
     def _read_full(self, path):
         if self.dataset.fs.isfile(path):
             with self.dataset.fs.open(path, "rb") as f:
                 logger.info(f"Reading dataset: path={path}")
-                return pq.read_table(f).to_pandas()
+                df = pq.read_table(f).to_pandas()
+                return self.process_special_data_types(df)
         else:
             logger.info(f"Reading full dataset from: {path}, this may take a while...")
             file_list = self.dataset.fs.glob(f"{path}/*.parquet")
@@ -91,6 +149,7 @@ class DatasetReader:
                     logger.debug(f"Reading file: path={file}")
                     with self.dataset.fs.open(file, "rb") as f:
                         df = pq.read_table(f).to_pandas()
+                        df = self.process_special_data_types(df)
                         dfs.append(df)
                 result = pd.concat(dfs, ignore_index=True)
                 logger.info(f"Successfully read dataset: path={path}, rows={len(result)}")
@@ -106,6 +165,7 @@ class DatasetReader:
                     pf = pq.ParquetFile(f)
                     for batch in pf.iter_batches():
                         df = batch.to_pandas()
+                        df = self.process_special_data_types(df)
                         current_batch.append(df)
                         current_size += len(df)
 

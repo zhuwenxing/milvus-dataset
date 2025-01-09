@@ -245,7 +245,7 @@ class Dataset:
             elif schema.dtype == DataType.BINARY_VECTOR:
                 pa_type = pa.list_(pa.uint8(), schema.dim // 8)
             elif schema.dtype == DataType.SPARSE_FLOAT_VECTOR:
-                # 使用struct类型存储稀疏向量
+                # Sparse vectors are stored as json dumps strings
                 pa_type = pa.string()
             elif schema.dtype == DataType.ARRAY:
                 element_type = schema.element_type
