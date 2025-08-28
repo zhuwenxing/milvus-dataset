@@ -393,9 +393,14 @@ class Dataset:
 
                 if self.split in ["train", "test"]:
                     # Sort files by creation time
-                    files = [
-                        (f, self.fs.info(f)["created"]) for f in self.fs.glob(f"{path}/*.parquet")
-                    ]
+                    files = []
+                    for f in self.fs.glob(f"{path}/*.parquet"):
+                        info = self.fs.info(f)
+                        # Try different timestamp fields based on storage type
+                        timestamp = (
+                            info.get("created") or info.get("LastModified") or info.get("mtime", 0)
+                        )
+                        files.append((f, timestamp))
                     files.sort(key=lambda x: x[1])  # Sort by creation time
 
                     # Rename files according to their sorted order
@@ -550,7 +555,12 @@ class Dataset:
 
         if self.split in ["train", "test"]:
             # Sort files by creation time
-            files = [(f, self.fs.info(f)["created"]) for f in self.fs.glob(f"{path}/*.parquet")]
+            files = []
+            for f in self.fs.glob(f"{path}/*.parquet"):
+                info = self.fs.info(f)
+                # Try different timestamp fields based on storage type
+                timestamp = info.get("created") or info.get("LastModified") or info.get("mtime", 0)
+                files.append((f, timestamp))
             files.sort(key=lambda x: x[1])  # Sort by creation time
 
             # Rename files according to their sorted order

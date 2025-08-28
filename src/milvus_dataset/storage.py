@@ -28,7 +28,15 @@ def _create_filesystem(storage_config: StorageConfig) -> AbstractFileSystem:
         try:
             fs = fsspec.filesystem("s3", **storage_config.options)
             # Test connection
-            bucket = storage_config.root_path.split("/")[0]
+            # Parse bucket name from both s3://bucket/path and bucket/path formats
+            root_path = storage_config.root_path.rstrip("/")
+            if root_path.startswith("s3://"):
+                # Format: s3://bucket/path -> extract bucket
+                path_parts = root_path.split("/")
+                bucket = path_parts[2] if len(path_parts) > 2 else path_parts[-1]
+            else:
+                # Format: bucket/path -> extract bucket
+                bucket = root_path.split("/")[0]
             print(bucket)
             try:
                 files = fs.ls(bucket)
