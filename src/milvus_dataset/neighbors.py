@@ -168,6 +168,7 @@ class NeighborsComputation:
         dataset_dict: dict[str, "Dataset"],
         vector_field_name: str,
         pk_field_name: str = "id",
+        test_pk_field_name: str | None = None,
         query_expr: str | None = None,
         top_k: int = 1000,
         metric_type: str = "cosine",
@@ -180,7 +181,9 @@ class NeighborsComputation:
         Args:
             dataset_dict (Dict[str, Dataset]): Dictionary containing dataset information
             vector_field_name (str): Name of the field containing vector data
-            pk_field_name (str): Name of the primary key field (default: "id")
+            pk_field_name (str): Name of the primary key field for train data (default: "id")
+            test_pk_field_name (str, optional): Name of the primary key field for test data.
+                                               If None, uses pk_field_name for both train and test data.
             query_expr (Optional[str]): Optional query expression for filtering data
             top_k (int): Number of nearest neighbors to compute (default: 1000)
             metric_type (str): Distance metric to use (default: "cosine")
@@ -191,6 +194,9 @@ class NeighborsComputation:
         self.dataset_dict = dataset_dict
         self.vector_field_name = vector_field_name
         self.pk_field_name = pk_field_name
+        self.test_pk_field_name = (
+            test_pk_field_name if test_pk_field_name is not None else pk_field_name
+        )
         self.query_expr = query_expr
         self.top_k = top_k
         self.metric_type = metric_type
@@ -249,7 +255,7 @@ class NeighborsComputation:
 
         def process_batch(test_batch):
             test_emb = np.array(test_batch[vector_field_name].tolist())
-            test_idx = test_batch[self.pk_field_name].tolist()
+            test_idx = test_batch[self.test_pk_field_name].tolist()
 
             if self.use_gpu:
                 logger.info("Using GPU for neighbor computation")
@@ -342,7 +348,7 @@ class NeighborsComputation:
                 result[i, j] = (train_idx[all_indices[i, j]], all_distances[i, j])
 
         df_neighbors = pd.DataFrame(
-            {self.pk_field_name: all_test_idx, "neighbors_id": result.tolist()}
+            {self.test_pk_field_name: all_test_idx, "neighbors_id": result.tolist()}
         )
 
         temp_manager = TempFolderManager(self.neighbors)
@@ -363,7 +369,9 @@ class NeighborsComputation:
         # Parallel file reading
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = [
-                executor.submit(parallel_read_parquet, f, self.neighbors.fs, self.pk_field_name)
+                executor.submit(
+                    parallel_read_parquet, f, self.neighbors.fs, self.test_pk_field_name
+                )
                 for f in file_list
             ]
             results = list(
@@ -409,12 +417,13 @@ class NeighborsComputation:
         t_df = time.time()
         df = pd.DataFrame(
             {
-                self.pk_field_name: test_idx,
+                self.test_pk_field_name: test_idx,
                 "neighbors_id": final_ids.tolist(),
                 "neighbors_distance": final_distances.tolist(),
                 "metric": self.metric_type,
                 "query_expr": self.query_expr,
                 "pk_field_name": self.pk_field_name,
+                "test_pk_field_name": self.test_pk_field_name,
                 "vector_field_name": self.vector_field_name,
                 "top_k": self.top_k,
             }
@@ -465,7 +474,7 @@ class NeighborsComputation:
             )
 
         final_df = pd.concat(dfs, ignore_index=True)
-        final_df = final_df.sort_values(self.pk_field_name).reset_index(drop=True)
+        final_df = final_df.sort_values(self.test_pk_field_name).reset_index(drop=True)
 
         final_file_name = self.file_name
         logger.info(f"Writing final merged results to {final_file_name}")
