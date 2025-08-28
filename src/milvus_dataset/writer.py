@@ -13,7 +13,6 @@ import os
 import tempfile
 import threading
 import time
-import uuid
 from datetime import datetime, timezone
 from queue import Queue
 from typing import TYPE_CHECKING
@@ -66,6 +65,7 @@ class DatasetWriter:
         self.write_threads = []
         self.current_buffer = 0
         self.file_counter = 0
+        self.file_counter_lock = threading.Lock()  # 线程安全的计数器
         self.mode = "append"
 
     def __enter__(self) -> "DatasetWriter":
@@ -226,12 +226,19 @@ class DatasetWriter:
         self.dataset.fs.makedirs(base_path, exist_ok=True)
 
         if self.mode == "append" and self.file_counter == 0:
-            existing_files = sorted(self.dataset.fs.glob(f"{base_path}/part-*.parquet"))
+            existing_files = sorted(
+                self.dataset.fs.glob(f"{base_path}/{self.dataset.split}-part-*.parquet")
+            )
             if existing_files:
                 last_file = existing_files[-1]
-                self.file_counter = int(last_file.split("-")[-1].split(".")[0]) + 1
+                self.file_counter = int(last_file.split("-")[-1].split(".")[0])
 
-        filename = f"{uuid.uuid4()}.parquet"
+        # 线程安全的文件计数
+        with self.file_counter_lock:
+            self.file_counter += 1
+            current_counter = self.file_counter
+
+        filename = f"{self.dataset.split}-part-{current_counter:06d}.parquet"
         file_path = f"{base_path}/{filename}"
 
         try:

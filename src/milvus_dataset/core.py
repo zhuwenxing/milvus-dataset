@@ -553,27 +553,7 @@ class Dataset:
         schema_dict = {}
         num_files = 0
 
-        if self.split in ["train", "test"]:
-            # Sort files by creation time
-            files = []
-            for f in self.fs.glob(f"{path}/*.parquet"):
-                info = self.fs.info(f)
-                # Try different timestamp fields based on storage type
-                timestamp = info.get("created") or info.get("LastModified") or info.get("mtime", 0)
-                files.append((f, timestamp))
-            files.sort(key=lambda x: x[1])  # Sort by creation time
-
-            # Rename files according to their sorted order
-            for idx, (old_file, _) in enumerate(files, 1):
-                new_name = f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet"
-                if old_file != new_name:
-                    self.fs.rename(old_file, new_name)
-            files = [
-                f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet"
-                for idx in range(1, len(files) + 1)
-            ]
-        else:
-            files = self.fs.glob(f"{path}/*.parquet")
+        files = self.fs.glob(f"{path}/*.parquet")
 
         logger.info(f"files in path: {files}")
         for file in files:
