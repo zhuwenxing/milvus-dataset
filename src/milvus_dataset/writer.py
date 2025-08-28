@@ -147,7 +147,6 @@ class DatasetWriter:
     ) -> None:
         self.mode = mode
 
-
         if isinstance(data, pd.DataFrame):
             self._write_dataframe(data)
         elif isinstance(data, dict):

@@ -1,30 +1,34 @@
-from loguru import logger
 from pymilvus import CollectionSchema, DataType, FieldSchema
 
-from milvus_dataset import ConfigManager, StorageType, list_datasets
+from milvus_dataset import ConfigManager, StorageType, load_dataset
 
-logger.info("start to create dataset")
-
-
-ConfigManager().init_storage(
-    root_path="./data/cohere-dataset",
-    storage_type=StorageType.LOCAL,
-)
+config_manager = ConfigManager()
+# config_manager.init_storage("/tmp/milvus_dataset")
 
 
-id_field = FieldSchema("idx", DataType.INT64, is_primary=True)
-chunk_field = FieldSchema("chunk_id", DataType.VARCHAR, max_length=100)
-emb_field = FieldSchema("emb", DataType.FLOAT_VECTOR, dim=1024)
-url_field = FieldSchema("url", DataType.VARCHAR, max_length=25536)
-title_field = FieldSchema("title", DataType.VARCHAR, max_length=25536)
-text_field = FieldSchema("text", DataType.VARCHAR, max_length=25536)
-schema = CollectionSchema(
-    fields=[id_field, chunk_field, url_field, title_field, text_field, emb_field],
-    description="我的数据集schema",
-)
-dict = schema.to_dict()
-logger.info(f"schema dict: {dict}")
+if __name__ == "__main__":
+    import sys
 
+    print(sys.version)
+    ConfigManager().init_storage(
+        root_path="./data",
+        storage_type=StorageType.LOCAL,
+    )
 
-all_datasets = list_datasets()
-logger.info(f"all datasets: {all_datasets}")
+    # 创建schema
+    id_field = FieldSchema("id", DataType.INT64, is_primary=True)
+    vector_field = FieldSchema("emb", DataType.FLOAT_VECTOR, dim=128)
+    schema = CollectionSchema(fields=[id_field, vector_field], description="我的数据集schema")
+
+    dataset = load_dataset("mongodb-test", schema=schema)
+    print(dataset)
+    dataset.generate_data(num_rows={"train": 5_000, "test": 1000})
+    dataset.compute_neighbors(
+        pk_field_name="id",
+        vector_field_name="emb",
+        top_k=1000,
+        max_rows_per_epoch=10000,
+        metric_type="cosine",
+    )
+    dataset.summary()
+    print(dataset)

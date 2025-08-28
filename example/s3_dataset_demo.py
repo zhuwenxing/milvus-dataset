@@ -1,3 +1,4 @@
+import dotenv
 from loguru import logger
 from pymilvus import CollectionSchema, DataType, FieldSchema
 
@@ -6,7 +7,6 @@ from milvus_dataset import ConfigManager, StorageType, load_dataset
 logger.info("start to create dataset")
 config_manager = ConfigManager()
 
-import dotenv
 
 dotenv.load_dotenv()
 

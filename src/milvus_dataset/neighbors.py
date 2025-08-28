@@ -42,7 +42,9 @@ except Exception as e:
 
 
 @nb.njit(parallel=True)
-def process_neighbors_fast(ids: np.ndarray, distances: np.ndarray, top_k: int) -> tuple[np.ndarray, np.ndarray]:
+def process_neighbors_fast(
+    ids: np.ndarray, distances: np.ndarray, top_k: int
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Fast processing of separate id and distance arrays using Numba.
 
@@ -162,17 +164,17 @@ class NeighborsComputation:
     """
 
     def __init__(
-            self,
-            dataset_dict: dict[str, "Dataset"],
-            vector_field_name: str,
-            pk_field_name: str = "id",
-            query_expr: str | None = None,
-            top_k: int = 1000,
-            metric_type: str = "cosine",
-            max_rows_per_epoch: int = 30000,
-            test_batch_size: int = 5000,
-            device: str = "auto",
-        ) -> None:
+        self,
+        dataset_dict: dict[str, "Dataset"],
+        vector_field_name: str,
+        pk_field_name: str = "id",
+        query_expr: str | None = None,
+        top_k: int = 1000,
+        metric_type: str = "cosine",
+        max_rows_per_epoch: int = 30000,
+        test_batch_size: int = 5000,
+        device: str = "auto",
+    ) -> None:
         """Initialize the NeighborsComputation instance.
 
         Args:
@@ -206,7 +208,9 @@ class NeighborsComputation:
             self.use_gpu = GPU_AVAILABLE
         elif device == "cuda":
             if not GPU_AVAILABLE:
-                raise RuntimeError(f"CUDA device requested but GPU is not available with import error {import_error}")
+                raise RuntimeError(
+                    f"CUDA device requested but GPU is not available with import error {import_error}"
+                )
             self.use_gpu = True
         else:  # device == "cpu"
             self.use_gpu = False
@@ -227,7 +231,7 @@ class NeighborsComputation:
             b[i, :] = np.argsort(a[i, :])
         return b
 
-    def compute_neighbors( # noqa
+    def compute_neighbors(  # noqa
         self,
         test_data: pd.DataFrame,
         train_data: pd.DataFrame,
@@ -242,6 +246,7 @@ class NeighborsComputation:
             vector_field_name (str): Name of the field containing vector data
             tmp_path (str): Temporary path for storing intermediate results
         """
+
         def process_batch(test_batch):
             test_emb = np.array(test_batch[vector_field_name].tolist())
             test_idx = test_batch[self.pk_field_name].tolist()
@@ -268,7 +273,9 @@ class NeighborsComputation:
                 if self.metric_type == "inner_product":
                     distance = -1 * (train_emb @ test_emb.T)
                 else:
-                    distance = pairwise_distances(train_emb, Y=test_emb, metric=self.metric_type, n_jobs=-1)
+                    distance = pairwise_distances(
+                        train_emb, Y=test_emb, metric=self.metric_type, n_jobs=-1
+                    )
                 distance = np.array(distance.T, order="C", dtype=np.float32)
                 distance_sorted_arg = self.fast_sort(distance)
                 indices = distance_sorted_arg[:, : self.top_k]
@@ -280,8 +287,12 @@ class NeighborsComputation:
 
         t0 = time.time()
         current_batch_size = len(test_data)
-        min_batch_size = min(100, current_batch_size)  # Minimum batch size to prevent infinite loops
-        logger.info(f"Starting neighbor computation with batch size: {current_batch_size}, min batch size: {min_batch_size}")
+        min_batch_size = min(
+            100, current_batch_size
+        )  # Minimum batch size to prevent infinite loops
+        logger.info(
+            f"Starting neighbor computation with batch size: {current_batch_size}, min batch size: {min_batch_size}"
+        )
         while current_batch_size >= min_batch_size:
             all_indices = []
             all_distances = []
@@ -297,7 +308,9 @@ class NeighborsComputation:
                 if not batch_success:
                     success = False
                     current_batch_size = current_batch_size // 2
-                    logger.info(f"Reducing batch size to {current_batch_size} due to GPU memory constraints")
+                    logger.info(
+                        f"Reducing batch size to {current_batch_size} due to GPU memory constraints"
+                    )
                     break
 
                 all_indices.extend(indices)
@@ -308,8 +321,12 @@ class NeighborsComputation:
                 break
 
         if current_batch_size < min_batch_size:
-            logger.info(f"current_batch_size: {current_batch_size}, min_batch_size: {min_batch_size}")
-            raise RuntimeError("Unable to process even with minimum batch size. Consider using CPU mode or reducing data dimensionality.")
+            logger.info(
+                f"current_batch_size: {current_batch_size}, min_batch_size: {min_batch_size}"
+            )
+            raise RuntimeError(
+                "Unable to process even with minimum batch size. Consider using CPU mode or reducing data dimensionality."
+            )
 
         logger.info(f"Final batch size: {current_batch_size}")
         logger.info(f"Neighbor computation cost time: {time.time() - t0}")
@@ -324,7 +341,9 @@ class NeighborsComputation:
             for j in range(all_indices.shape[1]):
                 result[i, j] = (train_idx[all_indices[i, j]], all_distances[i, j])
 
-        df_neighbors = pd.DataFrame({self.pk_field_name: all_test_idx, "neighbors_id": result.tolist()})
+        df_neighbors = pd.DataFrame(
+            {self.pk_field_name: all_test_idx, "neighbors_id": result.tolist()}
+        )
 
         temp_manager = TempFolderManager(self.neighbors)
         file_num = temp_manager.ensure_dir(tmp_path)
@@ -333,7 +352,9 @@ class NeighborsComputation:
         with self.neighbors.fs.open(file_name, "wb") as f:
             df_neighbors.to_parquet(f, engine="pyarrow", compression="snappy")
 
-    def merge_neighbors(self, final_file_name: str | None = None, tmp_path: str | None = None) -> str:
+    def merge_neighbors(
+        self, final_file_name: str | None = None, tmp_path: str | None = None
+    ) -> str:
         """Merge intermediate neighbor results with separate id and distance handling."""
         t_start = time.time()
         file_list = self.neighbors.fs.glob(f"{tmp_path}/*.parquet")
@@ -345,11 +366,13 @@ class NeighborsComputation:
                 executor.submit(parallel_read_parquet, f, self.neighbors.fs, self.pk_field_name)
                 for f in file_list
             ]
-            results = list(tqdm(
-                concurrent.futures.as_completed(futures),
-                total=len(futures),
-                desc="Reading files"
-            ))
+            results = list(
+                tqdm(
+                    concurrent.futures.as_completed(futures),
+                    total=len(futures),
+                    desc="Reading files",
+                )
+            )
 
         # Combine results and separate ids and distances
         test_idx = results[0].result()[0]  # Use first file's test_idx
@@ -384,16 +407,18 @@ class NeighborsComputation:
 
         # Create DataFrame efficiently
         t_df = time.time()
-        df = pd.DataFrame({
-            "idx": test_idx,
-            "neighbors_id": final_ids.tolist(),
-            "neighbors_distance": final_distances.tolist(),
-            "metric": self.metric_type,
-            "query_expr": self.query_expr,
-            "pk_field_name": self.pk_field_name,
-            "vector_field_name": self.vector_field_name,
-            "top_k": self.top_k
-        })
+        df = pd.DataFrame(
+            {
+                self.pk_field_name: test_idx,
+                "neighbors_id": final_ids.tolist(),
+                "neighbors_distance": final_distances.tolist(),
+                "metric": self.metric_type,
+                "query_expr": self.query_expr,
+                "pk_field_name": self.pk_field_name,
+                "vector_field_name": self.vector_field_name,
+                "top_k": self.top_k,
+            }
+        )
         logger.info(f"DataFrame creation completed in {time.time() - t_df:.3f}s")
 
         # Write results
@@ -404,7 +429,7 @@ class NeighborsComputation:
                 engine="pyarrow",
                 compression="snappy",
                 use_dictionary=False,
-                row_group_size=100000
+                row_group_size=100000,
             )
         logger.info(f"File writing completed in {time.time() - t_write:.3f}s")
 
@@ -460,8 +485,8 @@ class NeighborsComputation:
         start_time = time.time()
 
         # Get total counts directly
-        total_test_rows = len(self.dataset_dict['test'])
-        total_train_rows = len(self.dataset_dict['train'])
+        total_test_rows = len(self.dataset_dict["test"])
+        total_train_rows = len(self.dataset_dict["train"])
 
         # Calculate expected number of batches using math.ceil
         test_count = math.ceil(total_test_rows / self.test_batch_size)
@@ -470,8 +495,12 @@ class NeighborsComputation:
         logger.info(f"Total test batches: {test_count}, total test rows: {total_test_rows}")
         logger.info(f"Total train batches: {train_count}, total train rows: {total_train_rows}")
 
-        test_data_generator = self.dataset_dict['test'].read(mode='batch', batch_size=self.test_batch_size)
-        train_data_generator = self.dataset_dict['train'].read(mode='batch', batch_size=self.max_rows_per_epoch)
+        test_data_generator = self.dataset_dict["test"].read(
+            mode="batch", batch_size=self.test_batch_size
+        )
+        train_data_generator = self.dataset_dict["train"].read(
+            mode="batch", batch_size=self.max_rows_per_epoch
+        )
 
         temp_manager = TempFolderManager(self.neighbors)
         partial_files = []
@@ -483,22 +512,34 @@ class NeighborsComputation:
                 processed_test_rows += len(test_data)
                 progress = (processed_test_rows / total_test_rows) * 100
                 elapsed_time = time.time() - start_time
-                eta = (elapsed_time / processed_test_rows) * (total_test_rows - processed_test_rows) if processed_test_rows > 0 else 0
+                eta = (
+                    (elapsed_time / processed_test_rows) * (total_test_rows - processed_test_rows)
+                    if processed_test_rows > 0
+                    else 0
+                )
 
                 logger.info(f"Processing test batch {i+1}/{test_count} ({progress:.2f}% complete)")
-                logger.info(f"Test batch size: {len(test_data)}, Elapsed: {elapsed_time:.2f}s, ETA: {eta:.2f}s")
+                logger.info(
+                    f"Test batch size: {len(test_data)}, Elapsed: {elapsed_time:.2f}s, ETA: {eta:.2f}s"
+                )
 
                 with temp_manager.temp_folder(f"tmp_{i}") as tmp_test_split_path:
                     processed_train_rows = 0
                     for j, train_train in enumerate(train_data_generator):
                         processed_train_rows += len(train_train)
                         train_progress = (processed_train_rows / total_train_rows) * 100
-                        logger.info(f"Computing neighbors for train batch {j+1}/{train_count} ({train_progress:.2f}% of train data)")
+                        logger.info(
+                            f"Computing neighbors for train batch {j+1}/{train_count} ({train_progress:.2f}% of train data)"
+                        )
                         logger.info(f"Train batch size: {len(train_train)}")
-                        self.compute_neighbors(test_data, train_train, self.vector_field_name, tmp_test_split_path)
+                        self.compute_neighbors(
+                            test_data, train_train, self.vector_field_name, tmp_test_split_path
+                        )
 
                     # Reset train data generator for next test batch
-                    train_data_generator = self.dataset_dict['train'].read(mode='batch', batch_size=self.max_rows_per_epoch)
+                    train_data_generator = self.dataset_dict["train"].read(
+                        mode="batch", batch_size=self.max_rows_per_epoch
+                    )
 
                     merged_file_name = f"{tmp_path}/neighbors-{self.query_expr}-{i}.parquet"
                     partial_file = self.merge_neighbors(merged_file_name, tmp_test_split_path)

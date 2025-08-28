@@ -391,9 +391,11 @@ class Dataset:
                 schema_dict = {}
                 num_files = 0
 
-                if self.split in ['train', 'test']:
+                if self.split in ["train", "test"]:
                     # Sort files by creation time
-                    files = [(f, self.fs.info(f)['created']) for f in self.fs.glob(f"{path}/*.parquet")]
+                    files = [
+                        (f, self.fs.info(f)["created"]) for f in self.fs.glob(f"{path}/*.parquet")
+                    ]
                     files.sort(key=lambda x: x[1])  # Sort by creation time
 
                     # Rename files according to their sorted order
@@ -401,7 +403,10 @@ class Dataset:
                         new_name = f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet"
                         if old_file != new_name:
                             self.fs.rename(old_file, new_name)
-                    files = [f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet" for idx in range(1, len(files) + 1)]
+                    files = [
+                        f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet"
+                        for idx in range(1, len(files) + 1)
+                    ]
                 else:
                     files = self.fs.glob(f"{path}/*.parquet")
 
@@ -543,9 +548,9 @@ class Dataset:
         schema_dict = {}
         num_files = 0
 
-        if self.split in ['train', 'test']:
+        if self.split in ["train", "test"]:
             # Sort files by creation time
-            files = [(f, self.fs.info(f)['created']) for f in self.fs.glob(f"{path}/*.parquet")]
+            files = [(f, self.fs.info(f)["created"]) for f in self.fs.glob(f"{path}/*.parquet")]
             files.sort(key=lambda x: x[1])  # Sort by creation time
 
             # Rename files according to their sorted order
@@ -553,7 +558,10 @@ class Dataset:
                 new_name = f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet"
                 if old_file != new_name:
                     self.fs.rename(old_file, new_name)
-            files = [f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet" for idx in range(1, len(files) + 1)]
+            files = [
+                f"{path}/{self.split}-{idx:05d}-of-{len(files):05d}.parquet"
+                for idx in range(1, len(files) + 1)
+            ]
         else:
             files = self.fs.glob(f"{path}/*.parquet")
 
@@ -951,7 +959,7 @@ dataset: {self.name}
             f"Dataset '{self.name}' has been successfully written to Milvus collection '{collection_name}'"
         )
 
-    def benchmark_milvus( # noqa: C901
+    def benchmark_milvus(  # noqa: C901
         self,
         collection_name: str,
         search_params: dict | None = None,
@@ -1078,7 +1086,7 @@ dataset: {self.name}
             # Split test vectors for parallel processing
             chunk_size = max(1, len(test_vectors) // num_workers)
             vector_chunks = [
-                list(test_vectors[i: i + chunk_size])  # Convert each vector to a list
+                list(test_vectors[i : i + chunk_size])  # Convert each vector to a list
                 for i in range(0, len(test_vectors), chunk_size)
             ]
 

@@ -19,6 +19,7 @@ from .log_config import logger
 if TYPE_CHECKING:
     from .core import Dataset
 
+
 class DatasetReader:
     """A class for reading data from a dataset.
 
