@@ -342,6 +342,12 @@ class NeighborsComputation:
                     distances_gpu, indices_gpu = brute_force.search(index, test_emb, self.top_k)
                     distances = cp.asnumpy(distances_gpu)
                     indices = cp.asnumpy(indices_gpu).astype(np.int64)
+
+                    # For inner_product, negate distances to match CPU implementation
+                    # CPU uses -1 * inner_product to convert similarity to distance
+                    if self.metric_type == "inner_product":
+                        distances = -distances
+
                     return indices, distances, test_idx, True
                 except (cupy.cuda.memory.OutOfMemoryError, MemoryError) as e:
                     logger.warning(f"GPU memory error occurred: {e!s}")
