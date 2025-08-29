@@ -240,3 +240,115 @@ class TestLocalDatasetE2E:
 
         # Verify basic properties of neighbors
         assert len(neighbors_data) == test_samples  # One row per test sample
+
+    def test_compute_neighbors_force_parameter(self):
+        """Test force parameter functionality in compute_neighbors"""
+        dataset_name = "test_force_neighbors_dataset"
+        dataset = load_dataset(dataset_name, schema=self.schema)
+
+        # Create small datasets for faster testing
+        train_samples = 50
+        test_samples = 10
+        dim = 1024
+
+        # Prepare data
+        train_data = {
+            "idx": list(range(train_samples)),
+            "chunk_id": [f"train_chunk_{i}" for i in range(train_samples)],
+            "url": [f"http://example.com/{i}" for i in range(train_samples)],
+            "title": [f"Train Title {i}" for i in range(train_samples)],
+            "text": [f"Train text content {i}" for i in range(train_samples)],
+            "emb": [],
+        }
+
+        test_data = {
+            "idx": list(range(test_samples)),
+            "chunk_id": [f"test_chunk_{i}" for i in range(test_samples)],
+            "url": [f"http://test.com/{i}" for i in range(test_samples)],
+            "title": [f"Test Title {i}" for i in range(test_samples)],
+            "text": [f"Test text content {i}" for i in range(test_samples)],
+            "emb": [],
+        }
+
+        # Generate predictable embeddings
+        np.random.seed(42)
+        for _ in range(train_samples):
+            vec = np.random.rand(dim)
+            vec = vec / np.linalg.norm(vec)
+            train_data["emb"].append(vec.tolist())
+
+        for _ in range(test_samples):
+            vec = np.random.rand(dim)
+            vec = vec / np.linalg.norm(vec)
+            test_data["emb"].append(vec.tolist())
+
+        # Write data
+        with dataset["train"].get_writer(mode="overwrite") as writer:
+            df = pd.DataFrame(train_data)
+            writer.write(df, verify_schema=True)
+
+        with dataset["test"].get_writer(mode="overwrite") as writer:
+            df = pd.DataFrame(test_data)
+            writer.write(df, verify_schema=True)
+
+        # Get the neighbors computation instance to check file existence
+        neighbors = dataset["neighbors"]
+        result_file = f"{neighbors.root_path}/{neighbors.name}/{neighbors.split}/neighbors-vector-emb-pk-idx-expr-None-metric-cosine.parquet"
+
+        # Ensure no existing results
+        if neighbors.fs.exists(result_file):
+            neighbors.fs.rm(result_file)
+
+        import time
+
+        # Test 1: First computation (should create results)
+        start_time = time.time()
+        dataset.compute_neighbors(
+            vector_field_name="emb", pk_field_name="idx", top_k=5, metric_type="cosine", force=False
+        )
+        first_computation_time = time.time() - start_time
+
+        # Verify results were created
+        assert neighbors.fs.exists(result_file), "Results file should be created"
+        neighbors_data = dataset.get_neighbors("emb", pk_field_name="idx")
+        assert not neighbors_data.empty, "First computation should produce results"
+        assert len(neighbors_data) == test_samples, "Should have results for all test samples"
+
+        # Test 2: Second computation with force=False (should skip computation)
+        start_time = time.time()
+        dataset.compute_neighbors(
+            vector_field_name="emb", pk_field_name="idx", top_k=5, metric_type="cosine", force=False
+        )
+        cached_computation_time = time.time() - start_time
+
+        # Should be much faster (cached)
+        assert (
+            cached_computation_time < first_computation_time / 2
+        ), "Cached computation should be much faster"
+
+        # Results should still exist and be the same
+        neighbors_data_cached = dataset.get_neighbors("emb", pk_field_name="idx")
+        assert not neighbors_data_cached.empty, "Cached results should still exist"
+        assert len(neighbors_data_cached) == test_samples, "Cached results should be complete"
+
+        # Test 3: Third computation with force=True (should recompute)
+        start_time = time.time()
+        dataset.compute_neighbors(
+            vector_field_name="emb", pk_field_name="idx", top_k=5, metric_type="cosine", force=True
+        )
+        forced_computation_time = time.time() - start_time
+
+        # Should take similar time to first computation (recomputing)
+        # Allow some variance in timing
+        assert (
+            forced_computation_time > cached_computation_time * 2
+        ), "Forced computation should take longer than cached"
+
+        # Results should still exist
+        neighbors_data_forced = dataset.get_neighbors("emb", pk_field_name="idx")
+        assert not neighbors_data_forced.empty, "Forced computation should produce results"
+        assert len(neighbors_data_forced) == test_samples, "Forced results should be complete"
+
+        print(f"First computation: {first_computation_time:.3f}s")
+        print(f"Cached computation: {cached_computation_time:.3f}s")
+        print(f"Forced computation: {forced_computation_time:.3f}s")
