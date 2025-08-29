@@ -573,6 +573,25 @@ class NeighborsComputation:
             self.neighbors.fs.rm(file)
         logger.info("Cleaned up partial result files")
 
+    def _get_safe_folder_name(self) -> str:
+        """Generate a safe folder name based on final file naming pattern."""
+        import hashlib
+        import re
+
+        # Use the same pattern as final file naming for consistency
+        folder_name = f"neighbors-vector-{self.vector_field_name}-pk-{self.pk_field_name}-expr-{self.query_expr}-metric-{self.metric_type}"
+
+        # Replace only filesystem-unsafe characters, keep spaces and common operators readable
+        # Replace: / \ : * ? " < > | with underscores, but keep spaces, ==, !=, etc.
+        safe_folder_name = re.sub(r'[/\\:*?"<>|]', "_", folder_name)
+
+        # If the name is too long, use a hash
+        if len(safe_folder_name) > 200:
+            hash_obj = hashlib.md5(folder_name.encode())
+            safe_folder_name = f"neighbors_{hash_obj.hexdigest()[:12]}"
+
+        return safe_folder_name
+
     def compute_ground_truth(self):
         logger.info("Computing ground truth")
         start_time = time.time()
@@ -604,7 +623,9 @@ class NeighborsComputation:
         partial_files = []
         processed_test_rows = 0
 
-        with temp_manager.temp_folder("tmp") as tmp_path:
+        # Use query expression in temp folder name to avoid conflicts
+        safe_folder_name = self._get_safe_folder_name()
+        with temp_manager.temp_folder(f"tmp_{safe_folder_name}") as tmp_path:
             for i, test_data in enumerate(test_data_generator):
                 batch_start_time = time.time()
                 processed_test_rows += len(test_data)
@@ -621,7 +642,7 @@ class NeighborsComputation:
                     f"Test batch size: {len(test_data)}, Elapsed: {elapsed_time:.2f}s, ETA: {eta:.2f}s"
                 )
 
-                with temp_manager.temp_folder(f"tmp_{i}") as tmp_test_split_path:
+                with temp_manager.temp_folder(f"tmp_{safe_folder_name}_{i}") as tmp_test_split_path:
                     processed_train_rows = 0
                     for j, train_train in enumerate(train_data_generator):
                         processed_train_rows += len(train_train)
@@ -639,7 +660,7 @@ class NeighborsComputation:
                         mode="batch", batch_size=self.max_rows_per_epoch
                     )
 
-                    merged_file_name = f"{tmp_path}/neighbors-{self.query_expr}-{i}.parquet"
+                    merged_file_name = f"{tmp_path}/neighbors-{safe_folder_name}-{i}.parquet"
                     partial_file = self.merge_neighbors(merged_file_name, tmp_test_split_path)
                     partial_files.append(partial_file)
 
