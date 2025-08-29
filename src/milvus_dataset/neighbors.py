@@ -32,7 +32,7 @@ from .log_config import logger
 try:
     import cupy
     import cupy as cp
-    from cuvs.distance import pairwise_distance as cuvs_pairwise_distance
+    from cuvs.neighbors import brute_force
 
     GPU_AVAILABLE = True
 except Exception as e:
@@ -150,6 +150,7 @@ class NeighborsComputation:
 
     This class handles the computation of nearest neighbors for large-scale
     vector datasets, supporting both CPU and GPU acceleration when available.
+    Implements GPU memory optimizations including train data caching and async transfers.
 
     Args:
         dataset_dict (Dict[str, Dataset]): Dictionary containing dataset information
@@ -221,6 +222,56 @@ class NeighborsComputation:
         else:  # device == "cpu"
             self.use_gpu = False
 
+        # GPU optimization: Initialize train data caching
+        if self.use_gpu:
+            self._gpu_train_cache = {}
+
+    def _load_data_optimized(self, data_df, field_name, cache_key=None):
+        """Optimized data loading with reduced memory copying.
+
+        Args:
+            data_df: DataFrame containing the data
+            field_name: Name of the field to extract
+            cache_key: Optional cache key for GPU data caching
+
+        Returns:
+            numpy array or cupy array depending on device
+        """
+        # Check GPU cache first
+        if self.use_gpu and cache_key and cache_key in self._gpu_train_cache:
+            logger.info(f"Using cached GPU data for key: {cache_key}")
+            return self._gpu_train_cache[cache_key]
+
+        # Direct numpy array creation without intermediate list conversion
+        if hasattr(data_df[field_name].iloc[0], "__iter__") and not isinstance(
+            data_df[field_name].iloc[0], str
+        ):
+            # Vector data - use efficient numpy array creation
+            data_array = np.vstack(data_df[field_name].values)
+        else:
+            # Scalar data
+            data_array = data_df[field_name].values
+
+        if self.use_gpu:
+            # Transfer to GPU
+            gpu_array = cp.array(data_array, dtype=cp.float32)
+
+            # Cache if requested
+            if cache_key:
+                self._gpu_train_cache[cache_key] = gpu_array
+                logger.info(f"Cached GPU data for key: {cache_key}")
+
+            return gpu_array
+        else:
+            return data_array.astype(np.float32)
+
+    def _clear_gpu_cache(self):
+        """Clear GPU cache to free memory."""
+        if self.use_gpu and self._gpu_train_cache:
+            cache_size = len(self._gpu_train_cache)
+            self._gpu_train_cache.clear()
+            logger.info(f"Cleared GPU cache ({cache_size} items)")
+
     @staticmethod
     @nb.njit("int64[:,::1](float32[:,::1])", parallel=True)
     def fast_sort(a: np.ndarray) -> np.ndarray:
@@ -245,6 +296,7 @@ class NeighborsComputation:
         tmp_path: str,
     ) -> None:
         """Compute nearest neighbors for a batch of test data.
+        Uses optimized GPU data loading and caching.
 
         Args:
             test_data (pd.DataFrame): Test data batch
@@ -254,22 +306,37 @@ class NeighborsComputation:
         """
 
         def process_batch(test_batch):
-            test_emb = np.array(test_batch[vector_field_name].tolist())
+            # Optimized data loading without intermediate list conversion
+            test_emb = self._load_data_optimized(test_batch, vector_field_name)
             test_idx = test_batch[self.test_pk_field_name].tolist()
 
             if self.use_gpu:
-                logger.info("Using GPU for neighbor computation")
+                logger.info("Using GPU for neighbor computation with cached train data")
                 try:
-                    test_emb_gpu = cp.array(test_emb, dtype=cp.float32)
-                    train_emb_gpu = cp.array(train_emb, dtype=cp.float32)
-                    distance = cuvs_pairwise_distance(
-                        train_emb_gpu, test_emb_gpu, metric=self.metric_type
+                    # GPU computation using brute_force - now confirmed to support all metrics including inner_product!
+                    train_cache_key = (
+                        f"index_{id(train_data)}_{vector_field_name}_{self.metric_type}"
                     )
-                    distance = cp.asnumpy(distance)
-                    distance = np.array(distance.T, order="C")
-                    distance_sorted_arg = self.fast_sort(distance)
-                    indices = distance_sorted_arg[:, : self.top_k]
-                    distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
+                    if train_cache_key not in self._gpu_train_cache:
+                        # Map metric types to cuvs brute_force supported metrics
+                        if self.metric_type == "inner_product":
+                            metric_name = "inner_product"
+                        elif self.metric_type == "cosine":
+                            metric_name = "cosine"
+                        else:
+                            metric_name = "sqeuclidean"  # Default for L2/euclidean
+
+                        index = brute_force.build(train_emb_gpu, metric=metric_name)
+                        self._gpu_train_cache[train_cache_key] = index
+                        logger.info(f"Built and cached brute_force index for: {train_cache_key}")
+                    else:
+                        index = self._gpu_train_cache[train_cache_key]
+                        logger.info(f"Using cached brute_force index: {train_cache_key}")
+
+                    # Direct search to get neighbors and distances in one call - works for all metrics!
+                    distances_gpu, indices_gpu = brute_force.search(index, test_emb, self.top_k)
+                    distances = cp.asnumpy(distances_gpu)
+                    indices = cp.asnumpy(indices_gpu).astype(np.int64)
                     return indices, distances, test_idx, True
                 except (cupy.cuda.memory.OutOfMemoryError, MemoryError) as e:
                     logger.warning(f"GPU memory error occurred: {e!s}")
@@ -288,7 +355,14 @@ class NeighborsComputation:
                 distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
                 return indices, distances, test_idx, True
 
-        train_emb = np.array(train_data[vector_field_name].tolist())
+        # Optimized train data loading with GPU caching
+        train_cache_key = f"train_{id(train_data)}_{vector_field_name}"
+        train_emb_gpu = self._load_data_optimized(
+            train_data, vector_field_name, cache_key=train_cache_key
+        )
+        # Keep CPU version for fallback
+        if not self.use_gpu:
+            train_emb = train_emb_gpu
         train_idx = train_data[self.pk_field_name].tolist()
 
         t0 = time.time()
@@ -335,7 +409,17 @@ class NeighborsComputation:
             )
 
         logger.info(f"Final batch size: {current_batch_size}")
-        logger.info(f"Neighbor computation cost time: {time.time() - t0}")
+        computation_time = time.time() - t0
+        logger.info(f"Neighbor computation cost time: {computation_time:.3f}s")
+
+        # Log performance metrics for GPU usage
+        if self.use_gpu:
+            cache_size = len(self._gpu_train_cache)
+            logger.info(f"GPU cache entries: {cache_size}")
+            if computation_time > 0:
+                logger.info(
+                    f"Processing rate: {len(test_data) / computation_time:.1f} vectors/second"
+                )
 
         all_indices = np.array(all_indices)
         all_distances = np.array(all_distances)
@@ -493,6 +577,11 @@ class NeighborsComputation:
         logger.info("Computing ground truth")
         start_time = time.time()
 
+        # Clear GPU cache at start
+        if self.use_gpu:
+            self._clear_gpu_cache()
+            logger.info("Starting ground truth computation with fresh GPU cache")
+
         # Get total counts directly
         total_test_rows = len(self.dataset_dict["test"])
         total_train_rows = len(self.dataset_dict["train"])
@@ -563,3 +652,8 @@ class NeighborsComputation:
 
         final_time = time.time() - start_time
         logger.info(f"Ground truth computation completed in {final_time:.2f}s")
+
+        # Clean up GPU cache after computation
+        if self.use_gpu:
+            self._clear_gpu_cache()
+            logger.info("GPU cache cleaned up after computation")

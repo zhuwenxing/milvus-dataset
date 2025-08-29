@@ -536,6 +536,80 @@ class Dataset:
         # Implement this method to return the total number of rows for a given split
         pass
 
+    def _extract_sort_value(self, file_path: str, sort_field: str) -> tuple[str, any]:
+        """Extract sort field value from first row of parquet file efficiently."""
+        import pyarrow.parquet as pq
+
+        try:
+            with self.fs.open(file_path, "rb") as f:
+                parquet_file = pq.ParquetFile(f)
+
+                # Most efficient: read only first row group with specific column
+                # This minimizes I/O by reading just the needed data
+                first_row_group = parquet_file.read_row_group(0, columns=[sort_field])
+
+                # Get first value directly from the column
+                sort_value = first_row_group[sort_field][0].as_py()
+
+                sort_key = sort_value if isinstance(sort_value, str) else int(sort_value)
+                return (file_path, sort_key)
+
+        except Exception as e:
+            logger.error(f"Failed to read sort field from file {file_path}: {e}")
+            return (file_path, file_path)  # Use filename as fallback
+
+    def _rename_files_concurrently(self, file_sort_pairs: list, path: str) -> None:
+        """Rename files to standard format using concurrent operations."""
+        import concurrent.futures
+
+        def rename_file(old_path, new_path):
+            try:
+                if old_path != new_path:
+                    self.fs.rename(old_path, new_path)
+                    return f"Renamed: {old_path} -> {new_path}"
+                return f"No change: {old_path}"
+            except Exception as e:
+                return f"Failed: {old_path} -> {new_path}, Error: {e}"
+
+        total_files = len(file_sort_pairs)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            rename_tasks = []
+            for idx, (old_file, _) in enumerate(file_sort_pairs, 1):
+                new_name = f"{path}/{self.split}-{idx:05d}-of-{total_files:05d}.parquet"
+                task = executor.submit(rename_file, old_file, new_name)
+                rename_tasks.append(task)
+
+            for task in concurrent.futures.as_completed(rename_tasks):
+                result = task.result()
+                logger.debug(result)
+
+    def sort_and_rename_files(self, sort_field: str) -> None:
+        """
+        Sort files by the first row's sort field value and rename them in standard format.
+
+        Args:
+            sort_field (str): Name of the column to sort by (e.g., "PK", "id")
+        """
+        path = f"{self.root_path}/{self.name}/{self.split}"
+        if not self.fs.exists(path):
+            logger.warning(f"Path does not exist: {path}")
+            return
+
+        files = self.fs.glob(f"{path}/*.parquet")
+        if not files:
+            logger.info(f"No parquet files found in {path}")
+            return
+
+        logger.info(f"Found {len(files)} files to sort and rename by {sort_field}")
+
+        # Extract sort field values and sort
+        file_sort_pairs = [self._extract_sort_value(f, sort_field) for f in files]
+        file_sort_pairs.sort(key=lambda x: x[1])
+
+        # Rename files
+        self._rename_files_concurrently(file_sort_pairs, path)
+        logger.info(f"Completed sorting and renaming {len(files)} files")
+
     def summary(self) -> dict[str, str | int | dict]:
         path = f"{self.root_path}/{self.name}/{self.split}"
         if not self.fs.exists(path):
