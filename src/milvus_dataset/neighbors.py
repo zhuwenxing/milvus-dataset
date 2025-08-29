@@ -123,11 +123,12 @@ class TempFolderManager:
             return 0
 
     @contextmanager
-    def temp_folder(self, folder_name: str) -> Generator[str, None, None]:
+    def temp_folder(self, folder_name: str, persistent: bool = False) -> Generator[str, None, None]:
         """Create and manage a temporary folder.
 
         Args:
             folder_name (str): Name of the temporary folder
+            persistent (bool): If True, don't auto-delete the folder for debugging/resume
 
         Yields:
             str: Path to the temporary folder
@@ -136,13 +137,18 @@ class TempFolderManager:
         try:
             # 创建临时文件夹并确保它存在
             self.ensure_dir(tmp_path)
-            logger.debug(f"Created temporary folder: {tmp_path}")
+            if persistent:
+                logger.info(f"Created persistent folder: {tmp_path}")
+            else:
+                logger.debug(f"Created temporary folder: {tmp_path}")
             yield tmp_path
         finally:
-            # 在退出上下文时删除临时文件夹
-            if self.neighbors.fs.exists(tmp_path):
+            # 只在非持久化模式下删除临时文件夹
+            if not persistent and self.neighbors.fs.exists(tmp_path):
                 logger.debug(f"Removing temporary folder: {tmp_path}")
                 self.neighbors.fs.rm(tmp_path, recursive=True)
+            elif persistent:
+                logger.info(f"Keeping persistent folder: {tmp_path}")
 
 
 class NeighborsComputation:
@@ -222,26 +228,45 @@ class NeighborsComputation:
         else:  # device == "cpu"
             self.use_gpu = False
 
-        # GPU optimization: Initialize train data caching
-        if self.use_gpu:
-            self._gpu_train_cache = {}
+        # Removed GPU caching to avoid OOM issues and low cache hit rate
 
-    def _load_data_optimized(self, data_df, field_name, cache_key=None):
+    def _check_existing_results(self, tmp_path: str) -> list[str]:
+        """Check for existing partial result files for resume capability.
+
+        Args:
+            tmp_path (str): Path to check for existing files
+
+        Returns:
+            list[str]: List of existing partial result files
+        """
+        try:
+            if not self.neighbors.fs.exists(tmp_path):
+                return []
+
+            # Look for existing neighbors-test-*-train-*.parquet files
+            pattern = f"{tmp_path}/neighbors-test-*-train-*.parquet"
+            existing_files = self.neighbors.fs.glob(pattern)
+
+            if existing_files:
+                logger.info(f"Found {len(existing_files)} existing partial result files")
+                for f in existing_files:
+                    logger.info(f"  - {f}")
+
+            return existing_files
+        except Exception as e:
+            logger.warning(f"Error checking existing results: {e}")
+            return []
+
+    def _load_data_optimized(self, data_df, field_name):
         """Optimized data loading with reduced memory copying.
 
         Args:
             data_df: DataFrame containing the data
             field_name: Name of the field to extract
-            cache_key: Optional cache key for GPU data caching
 
         Returns:
             numpy array or cupy array depending on device
         """
-        # Check GPU cache first
-        if self.use_gpu and cache_key and cache_key in self._gpu_train_cache:
-            logger.info(f"Using cached GPU data for key: {cache_key}")
-            return self._gpu_train_cache[cache_key]
-
         # Direct numpy array creation without intermediate list conversion
         if hasattr(data_df[field_name].iloc[0], "__iter__") and not isinstance(
             data_df[field_name].iloc[0], str
@@ -253,24 +278,10 @@ class NeighborsComputation:
             data_array = data_df[field_name].values
 
         if self.use_gpu:
-            # Transfer to GPU
-            gpu_array = cp.array(data_array, dtype=cp.float32)
-
-            # Cache if requested
-            if cache_key:
-                self._gpu_train_cache[cache_key] = gpu_array
-                logger.info(f"Cached GPU data for key: {cache_key}")
-
-            return gpu_array
+            # Transfer to GPU (no caching to avoid OOM)
+            return cp.array(data_array, dtype=cp.float32)
         else:
             return data_array.astype(np.float32)
-
-    def _clear_gpu_cache(self):
-        """Clear GPU cache to free memory."""
-        if self.use_gpu and self._gpu_train_cache:
-            cache_size = len(self._gpu_train_cache)
-            self._gpu_train_cache.clear()
-            logger.info(f"Cleared GPU cache ({cache_size} items)")
 
     @staticmethod
     @nb.njit("int64[:,::1](float32[:,::1])", parallel=True)
@@ -294,6 +305,8 @@ class NeighborsComputation:
         train_data: pd.DataFrame,
         vector_field_name: str,
         tmp_path: str,
+        test_batch_index: int = 0,
+        train_batch_index: int = 0,
     ) -> None:
         """Compute nearest neighbors for a batch of test data.
         Uses optimized GPU data loading and caching.
@@ -311,29 +324,21 @@ class NeighborsComputation:
             test_idx = test_batch[self.test_pk_field_name].tolist()
 
             if self.use_gpu:
-                logger.info("Using GPU for neighbor computation with cached train data")
+                logger.info("Using GPU for neighbor computation")
                 try:
-                    # GPU computation using brute_force - now confirmed to support all metrics including inner_product!
-                    train_cache_key = (
-                        f"index_{id(train_data)}_{vector_field_name}_{self.metric_type}"
-                    )
-                    if train_cache_key not in self._gpu_train_cache:
-                        # Map metric types to cuvs brute_force supported metrics
-                        if self.metric_type == "inner_product":
-                            metric_name = "inner_product"
-                        elif self.metric_type == "cosine":
-                            metric_name = "cosine"
-                        else:
-                            metric_name = "sqeuclidean"  # Default for L2/euclidean
-
-                        index = brute_force.build(train_emb_gpu, metric=metric_name)
-                        self._gpu_train_cache[train_cache_key] = index
-                        logger.info(f"Built and cached brute_force index for: {train_cache_key}")
+                    # GPU computation using brute_force
+                    # Map metric types to cuvs brute_force supported metrics
+                    if self.metric_type == "inner_product":
+                        metric_name = "inner_product"
+                    elif self.metric_type == "cosine":
+                        metric_name = "cosine"
                     else:
-                        index = self._gpu_train_cache[train_cache_key]
-                        logger.info(f"Using cached brute_force index: {train_cache_key}")
+                        metric_name = "sqeuclidean"  # Default for L2/euclidean
 
-                    # Direct search to get neighbors and distances in one call - works for all metrics!
+                    # Build index fresh each time to avoid GPU memory buildup
+                    index = brute_force.build(train_emb_gpu, metric=metric_name)
+
+                    # Direct search to get neighbors and distances in one call
                     distances_gpu, indices_gpu = brute_force.search(index, test_emb, self.top_k)
                     distances = cp.asnumpy(distances_gpu)
                     indices = cp.asnumpy(indices_gpu).astype(np.int64)
@@ -355,11 +360,8 @@ class NeighborsComputation:
                 distances = np.array([distance[i, indices[i]] for i in range(len(indices))])
                 return indices, distances, test_idx, True
 
-        # Optimized train data loading with GPU caching
-        train_cache_key = f"train_{id(train_data)}_{vector_field_name}"
-        train_emb_gpu = self._load_data_optimized(
-            train_data, vector_field_name, cache_key=train_cache_key
-        )
+        # Load train data optimized (no caching to avoid GPU OOM)
+        train_emb_gpu = self._load_data_optimized(train_data, vector_field_name)
         # Keep CPU version for fallback
         if not self.use_gpu:
             train_emb = train_emb_gpu
@@ -412,14 +414,9 @@ class NeighborsComputation:
         computation_time = time.time() - t0
         logger.info(f"Neighbor computation cost time: {computation_time:.3f}s")
 
-        # Log performance metrics for GPU usage
-        if self.use_gpu:
-            cache_size = len(self._gpu_train_cache)
-            logger.info(f"GPU cache entries: {cache_size}")
-            if computation_time > 0:
-                logger.info(
-                    f"Processing rate: {len(test_data) / computation_time:.1f} vectors/second"
-                )
+        # Log performance metrics
+        if computation_time > 0:
+            logger.info(f"Processing rate: {len(test_data) / computation_time:.1f} vectors/second")
 
         all_indices = np.array(all_indices)
         all_distances = np.array(all_distances)
@@ -436,8 +433,10 @@ class NeighborsComputation:
         )
 
         temp_manager = TempFolderManager(self.neighbors)
-        file_num = temp_manager.ensure_dir(tmp_path)
-        file_name = f"{tmp_path}/neighbors_{file_num}.parquet"
+        temp_manager.ensure_dir(tmp_path)
+        file_name = (
+            f"{tmp_path}/neighbors-test-{test_batch_index}-train-{train_batch_index}.parquet"
+        )
         logger.info(f"Writing neighbors to {file_name}")
         with self.neighbors.fs.open(file_name, "wb") as f:
             df_neighbors.to_parquet(f, engine="pyarrow", compression="snappy")
@@ -578,8 +577,8 @@ class NeighborsComputation:
         import hashlib
         import re
 
-        # Use the same pattern as final file naming for consistency
-        folder_name = f"neighbors-vector-{self.vector_field_name}-pk-{self.pk_field_name}-expr-{self.query_expr}-metric-{self.metric_type}"
+        # Use the same pattern as final file naming for consistency, with batch size info
+        folder_name = f"neighbors-vector-{self.vector_field_name}-pk-{self.pk_field_name}-expr-{self.query_expr}-metric-{self.metric_type}-testbatch-{self.test_batch_size}-trainbatch-{self.max_rows_per_epoch}"
 
         # Replace only filesystem-unsafe characters, keep spaces and common operators readable
         # Replace: / \ : * ? " < > | with underscores, but keep spaces, ==, !=, etc.
@@ -592,89 +591,263 @@ class NeighborsComputation:
 
         return safe_folder_name
 
+    def _check_resume_capability(self, tmp_path: str, test_count: int) -> tuple[list[str], bool]:
+        """Check for existing results to enable resume capability."""
+        existing_files = self._check_existing_results(tmp_path)
+        if existing_files:
+            logger.info("Resume capability: Found existing partial results")
+            logger.info(
+                "If you want to restart from scratch, please manually delete the temp folder"
+            )
+            logger.info(f"Temp folder location: {tmp_path}")
+
+            # Skip to final merge if we already have all expected results
+            if len(existing_files) >= test_count:
+                logger.info("All partial results exist, proceeding to final merge")
+                return existing_files, True
+
+        return existing_files or [], False
+
+    def _check_test_batch_status(
+        self, tmp_path: str, safe_folder_name: str, i: int, train_count: int
+    ) -> tuple[str, bool, bool]:
+        """Check if test batch is already completed or partially completed."""
+        expected_result_file = f"{tmp_path}/neighbors-{safe_folder_name}-{i}.parquet"
+
+        # Check if final result exists
+        if self.neighbors.fs.exists(expected_result_file):
+            return expected_result_file, True, False
+
+        # Check for partial train results
+        test_split_path = f"{tmp_path}/tmp_{safe_folder_name}_{i}"
+        partial_train_files = []
+        for j in range(train_count):
+            train_result_file = f"{test_split_path}/neighbors-test-{i}-train-{j}.parquet"
+            if self.neighbors.fs.exists(train_result_file):
+                partial_train_files.append(train_result_file)
+
+        skip_train_computation = len(partial_train_files) == train_count
+
+        if skip_train_computation:
+            logger.info(
+                f"Resuming test batch {i+1} - found all {train_count} partial train results, proceeding to merge"
+            )
+        elif partial_train_files:
+            logger.info(
+                f"Found {len(partial_train_files)}/{train_count} partial train results for test batch {i+1}"
+            )
+            logger.info("Will recompute missing train batches")
+
+        return expected_result_file, False, skip_train_computation
+
+    def _process_train_batches(
+        self,
+        test_data,
+        train_data_generator,
+        tmp_test_split_path: str,
+        train_count: int,
+        total_train_rows: int,
+        i: int,
+        skip_train_computation: bool,
+    ):
+        """Process all train batches for a given test batch."""
+        if not skip_train_computation:
+            processed_train_rows = 0
+            for j, train_train in enumerate(train_data_generator):
+                # Check if this specific train batch result already exists
+                train_result_file = f"{tmp_test_split_path}/neighbors-test-{i}-train-{j}.parquet"
+                if self.neighbors.fs.exists(train_result_file):
+                    logger.info(f"Skipping train batch {j+1}/{train_count} - result already exists")
+                    processed_train_rows += len(train_train)
+                    continue
+
+                processed_train_rows += len(train_train)
+                train_progress = (processed_train_rows / total_train_rows) * 100
+                logger.info(
+                    f"Computing neighbors for train batch {j+1}/{train_count} ({train_progress:.2f}% of train data)"
+                )
+                logger.info(f"Train batch size: {len(train_train)}")
+                self.compute_neighbors(
+                    test_data,
+                    train_train,
+                    self.vector_field_name,
+                    tmp_test_split_path,
+                    test_batch_index=i,
+                    train_batch_index=j,
+                )
+        else:
+            logger.info("All train batch results exist, skipping computation")
+
     def compute_ground_truth(self):
+        """Compute ground truth with resume capability."""
         logger.info("Computing ground truth")
         start_time = time.time()
 
-        # Clear GPU cache at start
+        # GPU computation without caching to avoid OOM issues
         if self.use_gpu:
-            self._clear_gpu_cache()
-            logger.info("Starting ground truth computation with fresh GPU cache")
+            logger.info("Starting ground truth computation with GPU acceleration")
 
-        # Get total counts directly
+        batch_info = self._initialize_batch_computation()
+        temp_manager, safe_folder_name = self._setup_temp_management()
+
+        with temp_manager.temp_folder(f"tmp_{safe_folder_name}", persistent=True) as tmp_path:
+            partial_files = self._process_all_test_batches(
+                tmp_path, safe_folder_name, batch_info, start_time
+            )
+            self.merge_final_results(partial_files)
+
+        final_time = time.time() - start_time
+        logger.info(f"Ground truth computation completed in {final_time:.2f}s")
+        self._cleanup_temp_folders(tmp_path)
+
+    def _initialize_batch_computation(self) -> dict:
+        """Initialize batch computation parameters."""
         total_test_rows = len(self.dataset_dict["test"])
         total_train_rows = len(self.dataset_dict["train"])
-
-        # Calculate expected number of batches using math.ceil
         test_count = math.ceil(total_test_rows / self.test_batch_size)
         train_count = math.ceil(total_train_rows / self.max_rows_per_epoch)
 
         logger.info(f"Total test batches: {test_count}, total test rows: {total_test_rows}")
         logger.info(f"Total train batches: {train_count}, total train rows: {total_train_rows}")
 
+        return {
+            "total_test_rows": total_test_rows,
+            "total_train_rows": total_train_rows,
+            "test_count": test_count,
+            "train_count": train_count,
+        }
+
+    def _setup_temp_management(self):
+        """Setup temporary folder management."""
+        temp_manager = TempFolderManager(self.neighbors)
+        safe_folder_name = self._get_safe_folder_name()
+        return temp_manager, safe_folder_name
+
+    def _process_all_test_batches(
+        self, tmp_path: str, safe_folder_name: str, batch_info: dict, start_time: float
+    ) -> list:
+        """Process all test batches and return partial files."""
+        # Check for resume capability
+        partial_files, can_resume = self._check_resume_capability(
+            tmp_path, batch_info["test_count"]
+        )
+        if can_resume:
+            final_time = time.time() - start_time
+            logger.info(f"Ground truth computation completed (resumed) in {final_time:.2f}s")
+            return partial_files
+
+        # Process each test batch
         test_data_generator = self.dataset_dict["test"].read(
             mode="batch", batch_size=self.test_batch_size
         )
-        train_data_generator = self.dataset_dict["train"].read(
-            mode="batch", batch_size=self.max_rows_per_epoch
-        )
-
-        temp_manager = TempFolderManager(self.neighbors)
-        partial_files = []
         processed_test_rows = 0
 
-        # Use query expression in temp folder name to avoid conflicts
+        for i, test_data in enumerate(test_data_generator):
+            partial_file = self._process_single_test_batch(
+                i,
+                test_data,
+                tmp_path,
+                safe_folder_name,
+                batch_info,
+                processed_test_rows,
+                start_time,
+            )
+            if partial_file:
+                partial_files.append(partial_file)
+            processed_test_rows += len(test_data)
+
+        total_time = time.time() - start_time
+        logger.info(f"All test batches processed in {total_time:.2f}s")
+        return partial_files
+
+    def _process_single_test_batch(
+        self,
+        i: int,
+        test_data,
+        tmp_path: str,
+        safe_folder_name: str,
+        batch_info: dict,
+        processed_test_rows: int,
+        start_time: float,
+    ) -> str:
+        """Process a single test batch and return the partial file path."""
+        expected_result_file, is_completed, skip_train_computation = self._check_test_batch_status(
+            tmp_path, safe_folder_name, i, batch_info["train_count"]
+        )
+
+        if is_completed:
+            logger.info(
+                f"Skipping test batch {i+1}/{batch_info['test_count']} - final result already exists"
+            )
+            return expected_result_file
+
+        # Log progress
+        batch_start_time = time.time()
+        processed_test_rows += len(test_data)
+        progress = (processed_test_rows / batch_info["total_test_rows"]) * 100
+        elapsed_time = time.time() - start_time
+        eta = (
+            (elapsed_time / processed_test_rows)
+            * (batch_info["total_test_rows"] - processed_test_rows)
+            if processed_test_rows > 0
+            else 0
+        )
+
+        logger.info(
+            f"Processing test batch {i+1}/{batch_info['test_count']} ({progress:.2f}% complete)"
+        )
+        logger.info(
+            f"Test batch size: {len(test_data)}, Elapsed: {elapsed_time:.2f}s, ETA: {eta:.2f}s"
+        )
+
+        # Process this test batch
+        temp_manager = TempFolderManager(self.neighbors)
+        with temp_manager.temp_folder(
+            f"tmp_{safe_folder_name}_{i}", persistent=True
+        ) as tmp_test_split_path:
+            train_data_generator = self.dataset_dict["train"].read(
+                mode="batch", batch_size=self.max_rows_per_epoch
+            )
+            self._process_train_batches(
+                test_data,
+                train_data_generator,
+                tmp_test_split_path,
+                batch_info["train_count"],
+                batch_info["total_train_rows"],
+                i,
+                skip_train_computation,
+            )
+
+            # Merge results for this test batch
+            merged_file_name = f"{tmp_path}/neighbors-{safe_folder_name}-{i}.parquet"
+            partial_file = self.merge_neighbors(merged_file_name, tmp_test_split_path)
+
+        batch_time = time.time() - batch_start_time
+        logger.info(f"Completed test batch {i+1} in {batch_time:.2f}s")
+        return partial_file
+
+    def _cleanup_temp_folders(self, base_tmp_path: str):
+        """Clean up temporary folders after successful completion.
+
+        Args:
+            base_tmp_path (str): Base path containing temp folders to clean
+        """
+        try:
+            if self.neighbors.fs.exists(base_tmp_path):
+                logger.info(f"Cleaning up temporary folders: {base_tmp_path}")
+                self.neighbors.fs.rm(base_tmp_path, recursive=True)
+                logger.info("Temporary folders cleaned up successfully")
+        except Exception as e:
+            logger.warning(f"Failed to clean up temporary folders: {e}")
+            logger.warning(f"You may need to manually delete: {base_tmp_path}")
+
+    def clean_temp_folders(self):
+        """Manually clean up all temporary folders for this computation.
+
+        This can be called to clean up persistent temp folders left from previous runs.
+        """
         safe_folder_name = self._get_safe_folder_name()
-        with temp_manager.temp_folder(f"tmp_{safe_folder_name}") as tmp_path:
-            for i, test_data in enumerate(test_data_generator):
-                batch_start_time = time.time()
-                processed_test_rows += len(test_data)
-                progress = (processed_test_rows / total_test_rows) * 100
-                elapsed_time = time.time() - start_time
-                eta = (
-                    (elapsed_time / processed_test_rows) * (total_test_rows - processed_test_rows)
-                    if processed_test_rows > 0
-                    else 0
-                )
+        base_tmp_path = f"{self.neighbors.root_path}/{self.neighbors.name}/{self.neighbors.split}/tmp_{safe_folder_name}"
 
-                logger.info(f"Processing test batch {i+1}/{test_count} ({progress:.2f}% complete)")
-                logger.info(
-                    f"Test batch size: {len(test_data)}, Elapsed: {elapsed_time:.2f}s, ETA: {eta:.2f}s"
-                )
-
-                with temp_manager.temp_folder(f"tmp_{safe_folder_name}_{i}") as tmp_test_split_path:
-                    processed_train_rows = 0
-                    for j, train_train in enumerate(train_data_generator):
-                        processed_train_rows += len(train_train)
-                        train_progress = (processed_train_rows / total_train_rows) * 100
-                        logger.info(
-                            f"Computing neighbors for train batch {j+1}/{train_count} ({train_progress:.2f}% of train data)"
-                        )
-                        logger.info(f"Train batch size: {len(train_train)}")
-                        self.compute_neighbors(
-                            test_data, train_train, self.vector_field_name, tmp_test_split_path
-                        )
-
-                    # Reset train data generator for next test batch
-                    train_data_generator = self.dataset_dict["train"].read(
-                        mode="batch", batch_size=self.max_rows_per_epoch
-                    )
-
-                    merged_file_name = f"{tmp_path}/neighbors-{safe_folder_name}-{i}.parquet"
-                    partial_file = self.merge_neighbors(merged_file_name, tmp_test_split_path)
-                    partial_files.append(partial_file)
-
-                batch_time = time.time() - batch_start_time
-                logger.info(f"Completed test batch {i+1} in {batch_time:.2f}s")
-
-            total_time = time.time() - start_time
-            logger.info(f"All test batches processed in {total_time:.2f}s")
-            self.merge_final_results(partial_files)
-
-        final_time = time.time() - start_time
-        logger.info(f"Ground truth computation completed in {final_time:.2f}s")
-
-        # Clean up GPU cache after computation
-        if self.use_gpu:
-            self._clear_gpu_cache()
-            logger.info("GPU cache cleaned up after computation")
+        logger.info(f"Manually cleaning temp folders: {base_tmp_path}")
+        self._cleanup_temp_folders(base_tmp_path)
