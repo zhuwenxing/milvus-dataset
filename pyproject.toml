@@ -18,6 +18,7 @@ build-backend = "pdm.backend"
 gpu = [
     "cupy-cuda12x==13.3.0",
     "cuvs-cu12==24.12.0"
+    
 ]
 api = [
     "fastapi>=0.115.6",
