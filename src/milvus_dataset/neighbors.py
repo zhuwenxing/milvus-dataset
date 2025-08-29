@@ -655,6 +655,7 @@ class NeighborsComputation:
         total_train_rows: int,
         i: int,
         skip_train_computation: bool,
+        force: bool = False,
     ):
         """Process all train batches for a given test batch."""
         if not skip_train_computation:
@@ -662,7 +663,7 @@ class NeighborsComputation:
             for j, train_train in enumerate(train_data_generator):
                 # Check if this specific train batch result already exists
                 train_result_file = f"{tmp_test_split_path}/neighbors-test-{i}-train-{j}.parquet"
-                if self.neighbors.fs.exists(train_result_file):
+                if not force and self.neighbors.fs.exists(train_result_file):
                     logger.info(f"Skipping train batch {j+1}/{train_count} - result already exists")
                     processed_train_rows += len(train_train)
                     continue
@@ -712,7 +713,7 @@ class NeighborsComputation:
 
         with temp_manager.temp_folder(f"tmp_{safe_folder_name}", persistent=True) as tmp_path:
             partial_files = self._process_all_test_batches(
-                tmp_path, safe_folder_name, batch_info, start_time
+                tmp_path, safe_folder_name, batch_info, start_time, force
             )
             self.merge_final_results(partial_files)
 
@@ -744,7 +745,12 @@ class NeighborsComputation:
         return temp_manager, safe_folder_name
 
     def _process_all_test_batches(
-        self, tmp_path: str, safe_folder_name: str, batch_info: dict, start_time: float
+        self,
+        tmp_path: str,
+        safe_folder_name: str,
+        batch_info: dict,
+        start_time: float,
+        force: bool = False,
     ) -> list:
         """Process all test batches and return partial files."""
         # Check for resume capability
@@ -771,6 +777,7 @@ class NeighborsComputation:
                 batch_info,
                 processed_test_rows,
                 start_time,
+                force,
             )
             if partial_file:
                 partial_files.append(partial_file)
@@ -789,6 +796,7 @@ class NeighborsComputation:
         batch_info: dict,
         processed_test_rows: int,
         start_time: float,
+        force: bool = False,
     ) -> str:
         """Process a single test batch and return the partial file path."""
         expected_result_file, is_completed, skip_train_computation = self._check_test_batch_status(
@@ -836,6 +844,7 @@ class NeighborsComputation:
                 batch_info["total_train_rows"],
                 i,
                 skip_train_computation,
+                force,
             )
 
             # Merge results for this test batch
