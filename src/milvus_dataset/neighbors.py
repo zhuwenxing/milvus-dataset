@@ -684,10 +684,24 @@ class NeighborsComputation:
         else:
             logger.info("All train batch results exist, skipping computation")
 
-    def compute_ground_truth(self):
-        """Compute ground truth with resume capability."""
+    def compute_ground_truth(self, force: bool = False):
+        """Compute ground truth with resume capability.
+
+        Args:
+            force (bool): If True, force recomputation even if results already exist (default: False)
+        """
         logger.info("Computing ground truth")
         start_time = time.time()
+
+        # Check if final result already exists
+        if not force and self.neighbors.fs.exists(self.file_name):
+            logger.info(f"Ground truth results already exist at {self.file_name}")
+            logger.info("Use force=True to recompute")
+            return
+        elif force and self.neighbors.fs.exists(self.file_name):
+            logger.info("Forcing recomputation - existing results will be overwritten")
+            # Clean up existing temp folders to ensure fresh start
+            self.clean_temp_folders()
 
         # GPU computation without caching to avoid OOM issues
         if self.use_gpu:

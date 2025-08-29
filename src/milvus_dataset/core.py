@@ -917,6 +917,7 @@ dataset: {self.name}
         test_pk_field_name=None,
         query_expr=None,
         top_k=1000,
+        force=False,
         **kwargs,
     ):
         neighbors_computation = NeighborsComputation(
@@ -928,7 +929,7 @@ dataset: {self.name}
             top_k=top_k,
             **kwargs,
         )
-        neighbors_computation.compute_ground_truth()
+        neighbors_computation.compute_ground_truth(force=force)
 
     def get_neighbors(
         self, vector_field_name, pk_field_name="id", query_expr=None, metric_type="cosine"
