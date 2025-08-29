@@ -661,6 +661,20 @@ class NeighborsComputation:
         if not skip_train_computation:
             processed_train_rows = 0
             for j, train_train in enumerate(train_data_generator):
+                # Apply query expression filtering to train data if provided
+                if self.query_expr is not None:
+                    original_train_size = len(train_train)
+                    train_train = train_train.query(self.query_expr)
+                    filtered_train_size = len(train_train)
+                    logger.info(
+                        f"Train batch {j+1}: Applied query_expr '{self.query_expr}' - {original_train_size} rows -> {filtered_train_size} rows ({filtered_train_size/original_train_size*100:.1f}% retained)"
+                    )
+
+                    # Skip this batch if no data remains after filtering
+                    if len(train_train) == 0:
+                        logger.info(f"Skipping train batch {j+1} - no data remains after filtering")
+                        continue
+
                 # Check if this specific train batch result already exists
                 train_result_file = f"{tmp_test_split_path}/neighbors-test-{i}-train-{j}.parquet"
                 if not force and self.neighbors.fs.exists(train_result_file):
@@ -692,6 +706,10 @@ class NeighborsComputation:
             force (bool): If True, force recomputation even if results already exist (default: False)
         """
         logger.info("Computing ground truth")
+        if self.query_expr is not None:
+            logger.info(f"Using query expression for data filtering: '{self.query_expr}'")
+        else:
+            logger.info("No query expression provided - processing all data")
         start_time = time.time()
 
         # Check if final result already exists
@@ -769,6 +787,20 @@ class NeighborsComputation:
         processed_test_rows = 0
 
         for i, test_data in enumerate(test_data_generator):
+            # Apply query expression filtering to test data if provided
+            if self.query_expr is not None:
+                original_test_size = len(test_data)
+                test_data = test_data.query(self.query_expr)
+                filtered_test_size = len(test_data)
+                logger.info(
+                    f"Test batch {i+1}: Applied query_expr '{self.query_expr}' - {original_test_size} rows -> {filtered_test_size} rows ({filtered_test_size/original_test_size*100:.1f}% retained)"
+                )
+
+                # Skip this batch if no data remains after filtering
+                if len(test_data) == 0:
+                    logger.info(f"Skipping test batch {i+1} - no data remains after filtering")
+                    continue
+
             partial_file = self._process_single_test_batch(
                 i,
                 test_data,
